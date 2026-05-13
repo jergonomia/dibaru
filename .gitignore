@@ -1,0 +1,4 @@
+data/msmarco-docs.tsv
+data/
+.venv/
+__pycache__/
