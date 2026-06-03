@@ -8,13 +8,13 @@ import bs4
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.agents import create_agent
-from langchain_ollama import OllamaLLM
+from langchain_ollama import ChatOllama
 
-os.environ["LANGSMITH_TRACING"] = "true"
+os.environ["LANGSMITH_TRACING"] = "false"
 os.environ["LANGSMITH_API_KEY"] = getpass.getpass()
 os.environ["OPENAI_API_KEY"] = "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"
 
-model = OllamaLLM(model="llama3.2")
+model = ChatOllama(model="llama3.2")
 
 embedding = OllamaEmbeddings(model="nomic-embed-text")
 
@@ -49,7 +49,7 @@ print(document_ids[:3])  # Print the first 3 document IDs
 @tool(response_format="content_and_artifact")
 def retrieve_context(query: str):
     """Retrieve information to help answer a query."""
-    retrieved_docs = vector_store.similarity_search(query, k=3)
+    retrieved_docs = vector_store.similarity_search(query, k=2)
 
     serialized = "\n\n".join(
         (f"Source: {doc.metadata['source']}\nContent: {doc.page_content}" for doc in retrieved_docs)

@@ -1,0 +1,11 @@
+idx,question,intent,evidence_nodes
+1,does arkansas tax military retirement,Tax information on military retirement,"[""Arkansas"", ""tax"", ""military retirement""]"
+2,where is the festival of fantasy parade dining held?,Location of event venue,"[""festival of fantasy parade"", ""dining""]"
+3,what are symptoms your amniotic fluid is leaking,Symptoms of medical condition,"[""amniotic fluid"", ""leaking""]"
+4,how many inches is a king size headboard,Length measurement,"[""king size"", ""headboard""]"
+5,how to check ammonia levels in humans,Medical test Information,"[""ammonia levels"", ""humans""]"
+6,what are depression therapists called,Title of profession,"[""depression"", ""therapists""]"
+7,what to write in graduation cards,Graduation card message,"[""graduation"", ""cards""]"
+8,how long is a dog pregnant,Duration of pregnancy,"[""dog"", ""pregnant""]"
+9,what is the icloud used for,Description of service or product,"[""iCloud""]"
+10,where is budville nm,City address Information,"[""Budville"", ""NM""]"
