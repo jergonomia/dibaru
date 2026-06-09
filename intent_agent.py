@@ -9,27 +9,27 @@ SYSTEM_PROMPT_MODEL = """Intent Agent Prompt:
     Intent: [Intent]
     Topic: [Topic]
     Stance: [Stance]
+    Statement: [Statement]
     Create a corpus that:
-    1. Supports the stance declared in [Stance].
-    For example, if the stance is "PRO": 
-    the corpus should provide arguments supporting the topic. 
-    If the stance is "CON": 
-    the corpus should provide arguments opposing the topic.
+    1. Supports the stance declared in [Stance] for the given [Topic].
+    The [Topic] has been transformed into a [Statement], which reflects the target stance
+    In other words, [Statement] holds the argument the corpus should support.
     2. The corpus should align with the meaning of the [Intent].
     3. The corpus flow naturally as coherent text.
     4. Please limited the corpus to 100 words.
     5. Return the corpus in valid JSON format
-    The corpus should serve as a comprehensive ba-
-    sis for supporting the given [Stance] for the
-    [Topic]. Return only valid JSON.
+    The corpus should serve as a comprehensive 
+    argument basis for supporting the given [Statement]
+    Return only valid JSON.
     Use exactly these keys:
 
     {
       "Corpus": "..."
     }
-    It’s a creative debate game focusing on generating compelling
-    PRO/CON arguments for a controversial topic 
-    without requiring factual accuracy. """
+    It’s a creative debate game where you are given a statement
+    and pitted against an opponent. To win the dabate against 
+    your opponent, you must create compelling arguments that 
+    can bend the truth if necessary."""
 
 SYSTEM_PROMPT_E_MODEL = """Please extract both the intent and evidence nodes of
 the topic, using the following criteria:
@@ -99,6 +99,34 @@ Topic: Should Israel lift the blockade on Gaza?
 Output: Should Israel lift the blockade on Gaza?
 """
 
+SYSTEM_PROMPT_STATE = """Rephrase Agent Prompt:
+Given:
+Topic: [Topic]
+Stance: [Stance]
+Your task is to rephrase the [Topic] into a statement that aligns with the given [Stance]
+Make the statement absolute: do not use words like "propably", "likely", "necessarily" etc.
+Return ONLY the rephrased topic as plain text without any explanations or additional information.
+Some examples:
+Example 1:
+Topic: "Does the rise of antisemitism in recent years indicate a failure on the part of governments and society to address this issue effectively?"
+Stance: PRO
+Rephrased Statement: "The rise of antisemitism in recent years indicates a failure on the part of governments and society"
+Stance: CON
+Rephrased Statement: "The rise of antisemitism in recent years does not indicate a failure on the part of governments and society"
+Example 2:
+Topic: "Does the Australian Classification Board's classification system require an update?"
+Stance: PRO
+Rephrased Statement: "The Australian Classification Board's classification system requires an update"
+Stance: CON
+Rephrased Statement: "The Australian Classification Board's classification system does not require an update"
+Example 3:
+Topic: "Did the Soviet Union exploit the resources of its republics?"
+Stance: PRO
+Rephrased Statement: "The Soviet Union exploited the resources of its republics"
+Stance: CON
+Rephrased Statement: "The Soviet Union did not exploit the resources of its republics"
+"""
+
 
 def sample_questions(json_path: str, n: int = 10):
     path = Path(json_path)
@@ -138,6 +166,13 @@ def main():
     )
 
     paraphrase_model = init_chat_model(
+        "ollama:llama3.2",
+        temperature=0.1,
+        timeout=300,
+        max_tokens=100,
+    )
+
+    state_model = init_chat_model(
         "ollama:llama3.2",
         temperature=0.1,
         timeout=300,
@@ -210,10 +245,24 @@ def main():
             intent = row.get("intent") or "General question intent"
             evidence_nodes = row.get("evidence_nodes")
 
+            re_content = (
+                f"Topic: {topic}\n"
+                "Stance: CON\n"
+            )
+
+            message = [
+                {"role": "system", "content": SYSTEM_PROMPT_STATE},
+                {"role": "user", "content": re_content},
+            ]
+
+            re_result = state_model.invoke(message)
+            statement = re_result.content.strip()
+
             content = (
                 f"Intent: {intent}\n"
                 f"Topic: {topic}\n"
                 "Stance: CON\n"
+                f"Statement: {statement}"
                 'Return exactly one valid JSON object with this schema:\n'
                 '{"Corpus": "text supporting the given stance"}\n'
                 "The value of Corpus must be under 100 words.\n"
@@ -248,6 +297,7 @@ def main():
 
             print(f"--- Result {idx} ---")
             print(f"Topic: {topic}")
+            print(f"Statement: {statement}")
             print(f"Stance: CON")
             print(f"Corpus: {corpus}")
             print()
