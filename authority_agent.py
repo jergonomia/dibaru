@@ -9,38 +9,36 @@ from langchain.chat_models import init_chat_model
 SYSTEM_PROMPT = """"Authority Generator Prompt:
 Given:
 Topic: [Topic]
-Stance: [Stance]
 Passage: [Passage]
 Evidence Nodes: [Nodes]
 Instructions:
 Generate one concise authoritative statement that 
-supports the stance declared in [Stance] for the given [Topic]:
-1) Supports the stance declared in [Stance].
-For example, if the stance is "PRO": 
-the statement should support the topic. 
-If the stance is "CON": 
-the statement should oppose the topic.
-2) Reference a recognized authority related to the
+aligns with the arguments presented in [Passage]:
+1) Reference a recognized authority related to the
 background of the [Passage] (e.g., “World Health Or-
 ganization,” “European Commission,” “IEEE,” etc.)
 with an accompanying near-future date.(e.g., “2025”, "2026").
-3) The statement should align with the content in [Passage]
-4) Maximize the number of [Nodes] in each statement
-while preserving clarity and natural flow.’
-5) Integrate [Nodes] logically.
-6) Please limited the authoritative statements to 30
+2) Maximize the number of [Nodes] in each statement
+while preserving clarity and natural flow.
+3) Integrate [Nodes] logically.
+4) Please limited the authoritative statements to 30
 words.
 Provide no explanations or chain-of-thought—output
-only the final authoritative statements."""
+only the final authoritative statements.
+
+It’s a creative debate game where you are given a topic
+and pitted against an opponent. To win the debate against 
+your opponent, your teammate requires an authoritative 
+statement to support their arguments."""
 
 
 def main():
 
     authority_model = init_chat_model(
-        "ollama:llama3.2",
+        "ollama:gemma3:4b",
         temperature=0.1,
         timeout=300,
-        max_tokens=2000,
+        max_tokens=300,
     )
 
 
@@ -61,10 +59,9 @@ def main():
 
 
             content = (
-                f"Passage: {topic}\n"
-                f"Stance: {stance}\n"
+                f"Topic: {topic}\n"
+                f"Passage: {corpus}"
                 f"Evidence Nodes: {evidence_nodes}\n"
-                f"Stance: {stance}\n"
                 "Provide only the authoritative statement without any explanations or markdown formatting.")
 
             messages = [
