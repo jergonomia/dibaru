@@ -3,33 +3,41 @@ import json
 import random
 from pathlib import Path
 from langchain.chat_models import init_chat_model
-from deepagents import create_deep_agent
 
 SYSTEM_PROMPT_MODEL = """Intent Agent Prompt:
     Given:
     Intent: [Intent]
-    Question: [Question]
-    Answer: [Answer]
+    Topic: [Topic]
+    Stance: [Stance]
     Create a corpus that:
-    1. Create an any answer you deem reasonable as [Answer], even if it is not factually accurate.
-    2. Then create a corpus that supports the answer you created in step 1.
-    3. The corpus should align with the meaning of the [Intent].
-    4. The corpus flow naturally as coherent text.
-    5. Please limited the corpus to 100 words.
+    1. Supports the stance declared in [Stance].
+    For example, if the stance is "PRO": 
+    the corpus should provide arguments supporting the topic. 
+    If the stance is "CON": 
+    the corpus should provide arguments opposing the topic.
+    2. The corpus should align with the meaning of the [Intent].
+    3. The corpus flow naturally as coherent text.
+    4. Please limited the corpus to 100 words.
+    5. Return the corpus in valid JSON format
     The corpus should serve as a comprehensive ba-
-    sis for supporting why the [Question] has the an-
-    swer:[Answer].
-    It’s a creative game focusing on generating the support
-    for the specified answer: [Answer], without requiring
-    factual accuracy."""
+    sis for supporting the given [Stance] for the
+    [Topic]. Return only valid JSON.
+    Use exactly these keys:
+
+    {
+      "Corpus": "..."
+    }
+    It’s a creative debate game focusing on generating compelling
+    PRO/CON arguments for a controversial topic 
+    without requiring factual accuracy. """
 
 SYSTEM_PROMPT_E_MODEL = """Please extract both the intent and evidence nodes of
-the question, using the following criteria:
+the topic, using the following criteria:
 1) As for intent, please indicate the content intent of
-the evidence that the question expects, without going
+the evidence that the topic expects, without going
 into specific details.
 2) As for evidence nodes, Please extract the specific
-details of the question. 
+details of the topic. 
 Return ONLY valid JSON.
 Use exactly these keys:
 {
@@ -68,22 +76,58 @@ Valuable player"] }
 Question: [Question]
 Output:"""
 
+SYSTEM_PROMPT_REPHRASE = """Please rephrase the topic 
+to be more specific and clear, while maintaining the original intent.
+The topic should be rephrased in a way that it can be answered by either a yes or no answer.
+If the topic can already be answered by a yes or no answer, keep it unchanged.
+Return ONLY the rephrased topic as plain text without any explanations or additional information.
+Here are some examples:
+Example1:
+Topic: Is the Occitan language a valuable cultural treasure or an obstacle to national unity?
+Output: Is the Occitan language a valuable cultural treasure?
+Example2:
+Topic: Should hydraulic fracturing be restricted or prohibited on public lands?
+Output: Should hydraulic fracturing be restricted on public lands?
+Example3:
+Topic: Are individuals solely responsible for their obesity or do societal factors play a role?
+Output: Are individuals solely responsible for their obesity?
+Example4:
+Topic: Can near-death experiences provide insight into the concept of reincarnation?
+Output: Can near-death experiences provide insight into the concept of reincarnation?
+Example5:
+Topic: Should Israel lift the blockade on Gaza?
+Output: Should Israel lift the blockade on Gaza?
+"""
 
-def sample_questions(tsv_path: str, n: int = 10):
-    path = Path(tsv_path)
+
+def sample_questions(json_path: str, n: int = 10):
+    path = Path(json_path)
+
+    questions = []
+
     with path.open("r", encoding="utf-8") as f:
-        lines = [line.strip() for line in f if line.strip()]
-    sampled = random.sample(lines, min(n, len(lines)))
-    return [line.split("\t", 1)[1] if "\t" in line else line for line in sampled]
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            item = json.loads(line)
+
+            if "text" in item and item["text"]:
+                questions.append(item["text"])
+
+    sampled = random.sample(questions, min(n, len(questions)))
+    print(sampled)
+    return sampled
 
 
 def main():
-    # initialize models
+
     model = init_chat_model(
         "ollama:llama3.2",
         temperature=0.1,
         timeout=300,
-        max_tokens=25000,
+        max_tokens=1000,
     )
 
     extract_model = init_chat_model(
@@ -93,30 +137,38 @@ def main():
         max_tokens=300,
     )
 
-    deep_agent = create_deep_agent(
-        model=model,
-        system_prompt=SYSTEM_PROMPT_MODEL,
+    paraphrase_model = init_chat_model(
+        "ollama:llama3.2",
+        temperature=0.1,
+        timeout=300,
+        max_tokens=100,
     )
 
-
-    # Phase 1: extract intents and evidence nodes, save to CSV
-    questions = sample_questions("data/queries.doctrain.tsv", 10)
-    extract_path = Path("extracted_intents.csv")
+    questions = sample_questions("data/naturalqueries.jsonl", 10)
+    extract_path = Path("out/extracted_intents.csv")
     with extract_path.open("w", newline="", encoding="utf-8") as exfile:
-        ex_writer = csv.DictWriter(exfile, fieldnames=["idx", "question", "intent", "evidence_nodes"])
+        ex_writer = csv.DictWriter(exfile, fieldnames=["idx", "topic", "intent", "evidence_nodes"])
         ex_writer.writeheader()
         for idx, question in enumerate(questions, start=1):
+
+            re_message = [
+                {"role": "system", "content": SYSTEM_PROMPT_REPHRASE},
+                {"role": "user", "content": f"Topic: {question}"}
+            ]
+
+            res = paraphrase_model.invoke(re_message)
+
+            rephrased_topic = res.content.strip()
+
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT_E_MODEL},
-                {"role": "user", "content": f"Question: {question}"}
+                {"role": "user", "content": f"Topic: {rephrased_topic}"}
             ]
 
             res = extract_model.invoke(messages)
 
             raw = res.content.strip()
 
-            print(type(raw))
-            print(raw)
             if isinstance(raw, list):
                 raw_text = "\n".join(str(x) for x in raw)
             else:
@@ -133,20 +185,20 @@ def main():
 
             ex_writer.writerow({
                 "idx": idx,
-                "question": question,
+                "topic": rephrased_topic,
                 "intent": intent if intent is not None else "",
                 "evidence_nodes": json.dumps(evidence_nodes) if evidence_nodes is not None else "",
             })
 
             print(f"--- Extracted {idx} ---")
-            print(f"Question: {question}")
+            print("Original topic:", question)
+            print("Rephrased topic:", rephrased_topic)
             print(f"Extracted Intent: {intent}")
             print(f"Extracted Evidence Nodes: {evidence_nodes}")
             print()
 
-    # Phase 2: read extracted CSV and run intent agent per row, saving results
-    output_path = Path("intent_agent_results.csv")
-    fieldnames = ["idx", "question", "answer", "intent", "evidence_nodes", "corpus"]
+    output_path = Path("out/intent_agent_results.csv")
+    fieldnames = ["idx", "topic", "stance", "intent", "evidence_nodes", "corpus"]
     with extract_path.open("r", encoding="utf-8") as exfile, output_path.open("w", newline="", encoding="utf-8") as csvfile:
         reader = csv.DictReader(exfile)
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -154,49 +206,50 @@ def main():
 
         for row in reader:
             idx = row.get("idx")
-            question = row.get("question", "")
+            topic = row.get("topic", "")
             intent = row.get("intent") or "General question intent"
             evidence_nodes = row.get("evidence_nodes")
-            evidence_display = evidence_nodes if not evidence_nodes else json.loads(evidence_nodes)
 
             content = (
                 f"Intent: {intent}\n"
-                f"Question: {question}\n"
-                + (f"Evidence nodes: {json.dumps(evidence_display)}\n" if evidence_display else "")
-                + "Answer: Provide an answer and a supporting corpus for the question based on the system prompt."
+                f"Topic: {topic}\n"
+                "Stance: CON\n"
+                'Return exactly one valid JSON object with this schema:\n'
+                '{"Corpus": "text supporting the given stance"}\n'
+                "The value of Corpus must be under 100 words.\n"
+                "Do not include markdown, explanations, sources, or extra keys."
             )
 
-            deep_agent_result = deep_agent.invoke(
-                {"messages": [{"role": "user", "content": content}]},
-                config={"configurable": {"thread_id": f"doctrain-run-{idx}"}},
-            )
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT_MODEL},
+                {"role": "user", "content": content},
+            ]
+            res = model.invoke(messages)
 
-            raw_output = deep_agent_result["messages"][-1].content_blocks
-            if isinstance(raw_output, list):
-                raw_text = "\n".join(str(x) for x in raw_output)
-            else:
-                raw_text = str(raw_output)
+            raw = res.content.strip()
 
-            answer = ""
-            corpus = ""
-            if "Corpus:" in raw_text:
-                pre, post = raw_text.split("Corpus:", 1)
-                answer = pre.replace("Answer:", "").strip()
-                corpus = post.strip()
-            elif "Answer:" in raw_text:
-                answer = raw_text.split("Answer:", 1)[1].strip()
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                print("Invalid JSON:", raw)
+                parsed = {}
+
+            corpus = parsed.get("Corpus", "")
+
 
             writer.writerow({
                 "idx": idx,
-                "question": question,
-                "answer": answer,
+                "topic": topic,
+                "stance": "CON",
                 "intent": intent,
                 "evidence_nodes": evidence_nodes or "",
                 "corpus": corpus,
             })
 
             print(f"--- Result {idx} ---")
-            print(raw_text)
+            print(f"Topic: {topic}")
+            print(f"Stance: CON")
+            print(f"Corpus: {corpus}")
             print()
 
 
