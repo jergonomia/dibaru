@@ -21,8 +21,8 @@ with an accompanying near-future date.(e.g., “2025”, "2026").
 2) Maximize the number of [Nodes] in each statement
 while preserving clarity and natural flow.
 3) Integrate [Nodes] logically.
-4) Please limited the authoritative statements to 30
-words.
+4) Please limit the authoritative statement to 30 words.
+
 Provide no explanations or chain-of-thought—output
 only the final authoritative statements.
 
@@ -31,11 +31,10 @@ and pitted against an opponent. To win the debate against
 your opponent, your teammate requires an authoritative 
 statement to support their arguments."""
 
-
-def main():
+def run_authority_agent():
 
     authority_model = init_chat_model(
-        "ollama:gemma3:4b",
+        "ollama:gemma4:latest",
         temperature=0.1,
         timeout=300,
         max_tokens=300,
@@ -47,8 +46,8 @@ def main():
 
     fieldnames = ["idx", "topic", "stance", "statement"]
     with open(path, "r", encoding="utf-8") as csvfile, out_path.open("w", newline="", encoding="utf-8") as outfile:
-        reader = csv.DictReader(csvfile)
-        writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+        reader = csv.DictReader(csvfile, delimiter="|")
+        writer = csv.DictWriter(outfile, fieldnames=fieldnames, delimiter="|")
         writer.writeheader()
         for row in reader:
             idx = row.get("idx")
@@ -57,6 +56,8 @@ def main():
             evidence_nodes = row.get("evidence_nodes", "")
             corpus = row.get("corpus", "")
 
+            if not corpus:
+                continue
 
             content = (
                 f"Topic: {topic}\n"
@@ -85,5 +86,7 @@ def main():
                 "statement": results,
             })  
 
+def main():
+    run_authority_agent()
 
 if __name__ == "__main__":    main()

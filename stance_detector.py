@@ -25,7 +25,7 @@ def detect_stance(passage: str, topic: str) -> str:
     Returns one of: "PRO", "CON", "NEU", "UNK".
     """
     model = init_chat_model(
-        "ollama:qwen3.5:9b",
+        "ollama:qwen2.5:7b",
         temperature=0.1,
         timeout=300,
         max_tokens=1000,

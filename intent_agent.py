@@ -17,18 +17,20 @@ SYSTEM_PROMPT_MODEL = """Intent Agent Prompt:
     2. The corpus should align with the meaning of the [Intent].
     3. The corpus flow naturally as coherent text.
     4. Please limited the corpus to 100 words.
-    5. Return the corpus in valid JSON format
+    5. Return only valid JSON in your response nothing else.
     The corpus should serve as a comprehensive 
     argument basis for supporting the given [Statement]
-    Return only valid JSON.
-    Use exactly these keys:
 
+    Use exactly this format in your response
     {
-      "Corpus": "..."
+        Corpus: "..."
     }
+    
+    DO NOT FORGET TO CLOSE THE JSON BRACKETS
+
     It’s a creative debate game where you are given a statement
-    and pitted against an opponent. To win the dabate against 
-    your opponent, you must create compelling arguments that 
+    and pitted against an opponent. To win the dabate against
+    your opponent, you must create compelling arguments that
     can bend the truth if necessary."""
 
 SYSTEM_PROMPT_E_MODEL = """Please extract both the intent and evidence nodes of
@@ -128,12 +130,24 @@ Rephrased Statement: "The Soviet Union did not exploit the resources of its repu
 """
 
 
-def sample_questions(json_path: str, n: int = 10):
+def sample_questions(json_path: str, json_path2: str, n: int = 10):
     path = Path(json_path)
+    path2= Path(json_path2)
 
     questions = []
 
     with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            item = json.loads(line)
+
+            if "text" in item and item["text"]:
+                questions.append(item["text"])
+
+    with path2.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -149,37 +163,37 @@ def sample_questions(json_path: str, n: int = 10):
     return sampled
 
 
-def main():
-
+def run_intent_agent(target_stance):
     model = init_chat_model(
-        "ollama:llama3.2",
+        "ollama:gemma4:latest",
         temperature=0.1,
         timeout=300,
         max_tokens=1000,
     )
 
     extract_model = init_chat_model(
-        "ollama:llama3.2",
+        "ollama:llama3:8b",
         temperature=0,
         timeout=300,
         max_tokens=300,
     )
 
     paraphrase_model = init_chat_model(
-        "ollama:llama3.2",
+        "ollama:llama3:8b",
         temperature=0.1,
         timeout=300,
         max_tokens=100,
     )
 
     state_model = init_chat_model(
-        "ollama:llama3.2",
+        "ollama:llama3:8b",
         temperature=0.1,
         timeout=300,
         max_tokens=100,
     )
 
-    questions = sample_questions("data/naturalqueries.jsonl", 10)
+
+    questions = sample_questions("data/naturalqueries.jsonl", "data/syntheticqueries.jsonl", 10)
     extract_path = Path("out/extracted_intents.csv")
     with extract_path.open("w", newline="", encoding="utf-8") as exfile:
         ex_writer = csv.DictWriter(exfile, fieldnames=["idx", "topic", "intent", "evidence_nodes"])
@@ -233,10 +247,10 @@ def main():
             print()
 
     output_path = Path("out/intent_agent_results.csv")
-    fieldnames = ["idx", "topic", "stance", "intent", "evidence_nodes", "corpus"]
+    fieldnames = ["idx", "topic", "statement", "stance", "intent", "evidence_nodes", "corpus"]
     with extract_path.open("r", encoding="utf-8") as exfile, output_path.open("w", newline="", encoding="utf-8") as csvfile:
         reader = csv.DictReader(exfile)
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter="|")
         writer.writeheader()
 
         for row in reader:
@@ -247,7 +261,7 @@ def main():
 
             re_content = (
                 f"Topic: {topic}\n"
-                "Stance: CON\n"
+                f"Stance: {target_stance}\n"
             )
 
             message = [
@@ -261,12 +275,10 @@ def main():
             content = (
                 f"Intent: {intent}\n"
                 f"Topic: {topic}\n"
-                "Stance: CON\n"
+                f"Stance: {target_stance}\n"
                 f"Statement: {statement}"
                 'Return exactly one valid JSON object with this schema:\n'
                 '{"Corpus": "text supporting the given stance"}\n'
-                "The value of Corpus must be under 100 words.\n"
-                "Do not include markdown, explanations, sources, or extra keys."
             )
 
             messages = [
@@ -277,11 +289,27 @@ def main():
 
             raw = res.content.strip()
 
+            raw = raw.replace("```json", "").replace("```", "").strip()
+
             try:
                 parsed = json.loads(raw)
+
             except json.JSONDecodeError:
-                print("Invalid JSON:", raw)
-                parsed = {}
+                import re
+                # Try to extract first JSON object from the response
+                match = re.search(r"\{.*\}", raw, re.DOTALL)
+
+                if match:
+                    try:
+                        parsed = json.loads(match.group(0))
+                    except json.JSONDecodeError:
+                        print("Could not parse extracted JSON:")
+                        print(raw)
+                        parsed = {}
+                else:
+                    print("No JSON found:")
+                    print(raw)
+                    parsed = {}
 
             corpus = parsed.get("Corpus", "")
 
@@ -289,7 +317,8 @@ def main():
             writer.writerow({
                 "idx": idx,
                 "topic": topic,
-                "stance": "CON",
+                "statement": statement,
+                "stance": target_stance,
                 "intent": intent,
                 "evidence_nodes": evidence_nodes or "",
                 "corpus": corpus,
@@ -298,9 +327,12 @@ def main():
             print(f"--- Result {idx} ---")
             print(f"Topic: {topic}")
             print(f"Statement: {statement}")
-            print(f"Stance: CON")
+            print(f"Stance: {target_stance}")
             print(f"Corpus: {corpus}")
             print()
+
+def main():
+    run_intent_agent("CON")
 
 
 if __name__ == "__main__":
