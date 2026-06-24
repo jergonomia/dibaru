@@ -242,16 +242,16 @@ def stance_fractions(csv_path: str, annotated_csv_path: str | None = None, annot
             "total": total,
         }
 
-ANNOTATED_CLEAN = "../manual_stance/clean_con_nomic_annotation.csv"
-ANNOTATED_POISON = "../manual_stance/poisoin_con_nomic_annotation.csv"
+ANNOTATED_CLEAN = "../manual_stance/Authchain/clean_con_nomic_annotation.csv"
+ANNOTATED_POISON = "../manual_stance/Authchain/poison_con_nomic_annotation.csv"
 
 def main():
     parser = argparse.ArgumentParser(description="Compute and plot stance fractions.")
-    parser.add_argument("--clean-path", default="../manual_stance/rag_answers_clean_con_nomic.csv")
-    parser.add_argument("--poisoned-path", default="../manual_stance/rag_answers_poison_con_nomic.csv")
-    parser.add_argument("--clean-annotated-path", default=None,
+    parser.add_argument("--clean-path", default="../manual_stance/Authchain/rag_answers_clean_con_nomic.csv")
+    parser.add_argument("--poisoned-path", default="../manual_stance/Authchain/rag_answers_poison_con_nomic.csv")
+    parser.add_argument("--clean-annotated-path", default=ANNOTATED_CLEAN,
                         help="Optional CSV with manual annotations for clean answers")
-    parser.add_argument("--poisoned-annotated-path", default=None,
+    parser.add_argument("--poisoned-annotated-path", default=ANNOTATED_POISON,
                         help="Optional CSV with manual annotations for poisoned answers")
     parser.add_argument("--output-file", default="con_stance_results.png")
     parser.add_argument("--title", default="Target Opinion: CON")
