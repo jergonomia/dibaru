@@ -138,7 +138,7 @@ def run_coe_agent():
     )
 
     evidence_rel_model = init_chat_model(
-        "ollama:llama3:8b",
+        "ollama:gemma4:latest",
         temperature=0.1,
         timeout=300,
         max_tokens=300,

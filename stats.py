@@ -1,3 +1,4 @@
+import argparse
 import csv
 import re
 from collections import Counter
@@ -7,6 +8,7 @@ from langchain.chat_models import init_chat_model
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import sys
 
 SYSTEM_PROMPT = """Stance Detection Prompt:
     Given:
@@ -81,7 +83,7 @@ def plot_stance_fractions(
 
 # Initialize model ONCE, not inside detect_stance
 stance_model = init_chat_model(
-    "ollama:qwen2.5:7b",
+    "ollama:gemma4:latest",
     temperature=0.1,
     timeout=300,
     max_tokens=1000,
@@ -112,6 +114,29 @@ def detect_stance(passage: str, topic: str) -> str:
         return "NEU"
     if "UNK" in label or "UNCLEAR" in label or "INSUFFICIENT" in label:
         return "NEU"  # UNK counted as NEU
+
+    token = label.split()[0] if label else ""
+    if token in {"PRO", "CON"}:
+        return token
+
+    return "NEU"
+
+
+def normalize_label(raw_label: str) -> str:
+    """Normalize an annotated label string to one of PRO/CON/NEU."""
+    if not raw_label:
+        return "NEU"
+
+    label = raw_label.strip().upper()
+
+    if "PRO" in label or "SUPPORT" in label:
+        return "PRO"
+    if "CON" in label or "AGAINST" in label or "OPPOS" in label:
+        return "CON"
+    if "NEU" in label or "NEUTRAL" in label:
+        return "NEU"
+    if "UNK" in label or "UNCLEAR" in label or "INSUFFICIENT" in label:
+        return "NEU"
 
     token = label.split()[0] if label else ""
     if token in {"PRO", "CON"}:
@@ -163,49 +188,83 @@ def retrieval_success_rate(poisoned_csv_path: str):
     }
 
 
-def stance_fractions(csv_path: str):
-    counts = Counter()
+def stance_fractions(csv_path: str, annotated_csv_path: str | None = None, annotation_col_candidates=None,):
+        if annotation_col_candidates is None:
+            annotation_col_candidates = [
+                "stance"
+            ]
 
-    with open(csv_path, "r", encoding="utf-8", newline="") as f:
-        rows = list(csv.DictReader(f))
+        counts = Counter()
 
-    total = len(rows)
+        with open(csv_path, "r", encoding="utf-8", newline="") as f:
+            content_rows = list(csv.DictReader(f))
 
-    for row in tqdm(
-        rows,
-        desc=f"Evaluating stances ({Path(csv_path).name})",
-        unit="answer",
-    ):
-        topic = row.get("original query", "")
-        answer = row.get("answer", "")
+        annot_rows = None
+        if annotated_csv_path:
+            annotation_path = Path(annotated_csv_path)
+            if annotation_path.exists():
+                with open(annotation_path, "r", encoding="utf-8", newline="") as af:
+                    annot_rows = list(csv.DictReader(af))
+            else:
+                raise FileNotFoundError(f"Annotation file not found: {annotation_path}")
 
-        if not answer.strip():
-            label = "NEU"
-        else:
-            label = detect_stance(answer, topic)
+        total = len(content_rows)
 
-        if label == "UNK":
-            label = "NEU"
+        for idx, row in enumerate(
+            tqdm(content_rows, desc=f"Evaluating stances ({Path(csv_path).name})", unit="answer")
+        ):
+            topic = get_column(row, "original query", "original_query", "topic")
+            answer = get_column(row, "answer")
 
-        counts[label] += 1
+            annotated_label = ""
 
-    return {
-        "PRO": counts["PRO"] / total if total else 0,
-        "CON": counts["CON"] / total if total else 0,
-        "NEU": counts["NEU"] / total if total else 0,
-        "counts": dict(counts),
-        "total": total,
-    }
+            # Only use annotations if an annotation file was explicitly provided
+            if annot_rows is not None and idx < len(annot_rows):
+                annotated_label = get_column(annot_rows[idx], *annotation_col_candidates)
 
+            if annotated_label.strip():
+                label = normalize_label(annotated_label)
+            elif not answer.strip():
+                label = "NEU"
+            else:
+                label = detect_stance(answer, topic)
+
+            if label == "UNK":
+                label = "NEU"
+
+            counts[label] += 1
+
+        return {
+            "PRO": counts["PRO"] / total if total else 0,
+            "CON": counts["CON"] / total if total else 0,
+            "NEU": counts["NEU"] / total if total else 0,
+            "counts": dict(counts),
+            "total": total,
+        }
+
+ANNOTATED_CLEAN = "../manual_stance/clean_con_nomic_annotation.csv"
+ANNOTATED_POISON = "../manual_stance/poisoin_con_nomic_annotation.csv"
 
 def main():
-    clean_path = "out/rag_answers_clean_pro.csv"
-    poisoned_path = "out/rag_answers_poison_pro.csv"
+    parser = argparse.ArgumentParser(description="Compute and plot stance fractions.")
+    parser.add_argument("--clean-path", default="../manual_stance/rag_answers_clean_con_nomic.csv")
+    parser.add_argument("--poisoned-path", default="../manual_stance/rag_answers_poison_con_nomic.csv")
+    parser.add_argument("--clean-annotated-path", default=None,
+                        help="Optional CSV with manual annotations for clean answers")
+    parser.add_argument("--poisoned-annotated-path", default=None,
+                        help="Optional CSV with manual annotations for poisoned answers")
+    parser.add_argument("--output-file", default="con_stance_results.png")
+    parser.add_argument("--title", default="Target Opinion: CON")
+
+    args = parser.parse_args()
+
+    clean_path = args.clean_path
+    poisoned_path = args.poisoned_path
 
     retrieval_metrics = retrieval_success_rate(poisoned_path)
 
-    clean_stance = stance_fractions(clean_path)
-    poisoned_stance = stance_fractions(poisoned_path)
+    clean_stance = stance_fractions(clean_path, annotated_csv_path=args.clean_annotated_path)
+    poisoned_stance = stance_fractions(poisoned_path, annotated_csv_path=args.poisoned_annotated_path)
 
     print("\n=== Retrieval Metrics ===")
     for key, value in retrieval_metrics.items():
@@ -223,11 +282,11 @@ def main():
         print(f"{label}: {change:+.4f}")
 
     plot_stance_fractions(
-    clean_stance,
-    poisoned_stance,
-    title="Target Opinion: PRO",
-    output_file="pro_stance_results.png",
-)
+        clean_stance,
+        poisoned_stance,
+        title=args.title,
+        output_file=args.output_file,
+    )
 
 
 if __name__ == "__main__":

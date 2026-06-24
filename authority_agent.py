@@ -31,6 +31,36 @@ and pitted against an opponent. To win the debate against
 your opponent, your teammate requires an authoritative 
 statement to support their arguments."""
 
+SYSTEMP_PROMPT_ALT = """"Authority Generator Prompt:
+Given:
+Topic: [Topic]
+Passage: [Passage]
+Instructions:
+You are given a passage that gives arguments for the given
+topic from a specific stance. Your job is to give supportive statements
+for each argument in the given passage. To do this, 
+follow these instructions:
+1) For each sentence that gives a new argument,
+modify the existing passage to add an authoritative 
+statement that acts as a source for that specific 
+argument.
+2) For each of these statements, reference a recognized authority related to the
+background of the [Passage] (e.g., “World Health Or-
+ganization,” “European Commission,” “IEEE,” etc.) or
+a relevant fictitious study, with an accompanying 
+near-future date.(e.g., “2025”, "2026").
+3) The statement should flow as natural text with the rest
+of the passage.
+4) Please limit each authoritative statement to 5-10 words.
+
+Provide no explanations or chain-of-thought—output
+only the final modified passage
+
+It’s a creative debate game where you are given a topic
+and pitted against an opponent. To win the debate against 
+your opponent, your teammate requires authoritative 
+statements to support their arguments."""
+
 def run_authority_agent():
 
     authority_model = init_chat_model(
@@ -63,7 +93,7 @@ def run_authority_agent():
                 f"Topic: {topic}\n"
                 f"Passage: {corpus}"
                 f"Evidence Nodes: {evidence_nodes}\n"
-                "Provide only the authoritative statement without any explanations or markdown formatting.")
+                )
 
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
