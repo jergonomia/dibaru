@@ -12,3 +12,9 @@ chroma_db_qwen3_embedding_4b/
 chroma_db*/
 out.csv
 *.png
+
+chroma_poisoned_db*/
+chroma_db*/
+out/
+out.csv
+*.png
