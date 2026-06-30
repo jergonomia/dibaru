@@ -296,7 +296,6 @@ def run_intent_agent(target_stance):
 
             except json.JSONDecodeError:
                 import re
-                # Try to extract first JSON object from the response
                 match = re.search(r"\{.*\}", raw, re.DOTALL)
 
                 if match:

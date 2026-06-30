@@ -165,7 +165,6 @@ def run_coe_agent():
             if not corpus:
                 continue
 
-            # Call evidence relations model to extract relations from topic and evidence nodes
             evidence_relations = []
             try:
                 rel_prompt = (
@@ -183,7 +182,6 @@ def run_coe_agent():
                 print("Relations:", rel_text)
                 try:
                     parsed = json.loads(rel_text)
-                    # If parsed is a dict, extract the "Evidence Relations" key
                     if isinstance(parsed, dict):
                         for key in ("Evidence Relations", "EvidenceRelations", "evidence_relations", "Evidence_Relations", "Evidence relations"):
                             if key in parsed:
@@ -194,7 +192,6 @@ def run_coe_agent():
                     else:
                         evidence_relations = parsed
                 except Exception:
-                    # attempt to extract JSON substring if model added surrounding text
                     import re
                     m = re.search(r"(\[.*\]|\{.*\})", rel_text, re.S)
                     if m:

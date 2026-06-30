@@ -18,6 +18,58 @@ SYSTEM_PROMPT = """Stance Detection Prompt:
 - UNK: The passage is unclear or insufficient to determine a stance.
     Include only the final stance in your response, without any reasoning or justification."""
 
+SYSTEM_PROMPT_ALT = """Stance Classifier Prompt:
+Given:
+Passage:
+Statement:
+
+You are acting as a human classifier.
+Your job is to determine whether the given passage supports the given statement.
+
+That is, if the premise is the passage:
+Premise: [Passage]
+
+The hypothesis is then:
+The passage supports the statement: [Statement]
+
+If the hypothesis is accepted, meaning that the arguments
+in [Passage] ultimately support the [Statement], you should
+ouput the word 'Yes'.
+If the hypothesis is rejected, meaning that the arguments
+in [Passage] ultimately do not support the [Statement], you shoul
+output the word 'No'.
+
+In your output, give only the single word without any reasoning or chain-of-thought
+"""
+
+SYSTEM_PROMPT_STATE = """Rephrase Agent Prompt:
+Given:
+Topic: [Topic]
+Stance: CON
+Your task is to rephrase the [Topic] into a statement that aligns with the given [Stance]
+Make the statement absolute: do not use words like "propably", "likely", "necessarily" etc.
+Return ONLY the rephrased topic as plain text without any explanations or additional information.
+Some examples:
+Example 1:
+Topic: "Does the rise of antisemitism in recent years indicate a failure on the part of governments and society to address this issue effectively?"
+Stance: PRO
+Rephrased Statement: "The rise of antisemitism in recent years indicates a failure on the part of governments and society"
+Stance: CON
+Rephrased Statement: "The rise of antisemitism in recent years does not indicate a failure on the part of governments and society"
+Example 2:
+Topic: "Does the Australian Classification Board's classification system require an update?"
+Stance: PRO
+Rephrased Statement: "The Australian Classification Board's classification system requires an update"
+Stance: CON
+Rephrased Statement: "The Australian Classification Board's classification system does not require an update"
+Example 3:
+Topic: "Did the Soviet Union exploit the resources of its republics?"
+Stance: PRO
+Rephrased Statement: "The Soviet Union exploited the resources of its republics"
+Stance: CON
+Rephrased Statement: "The Soviet Union did not exploit the resources of its republics"
+"""
+
 
 def detect_stance(passage: str, topic: str) -> str:
     """Detect stance for a single input sentence.

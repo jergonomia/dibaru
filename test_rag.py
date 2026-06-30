@@ -37,13 +37,10 @@ os.environ["LANGSMITH_TRACING"] = "false"
 os.environ["LANGSMITH_API_KEY"] = getpass.getpass()
 
 
-# =========================
-# CONFIG
-# =========================
 
 BUILD_NEW_DOCS = False
 USE_POISONED_DB = True
-TARGET_STANCE = "CON"
+TARGET_STANCE = "CON"  # "PRO" or "CON"
 
 EMBEDDER_NAME = "nomic"  # "nomic" or "qwen"
 
@@ -74,10 +71,6 @@ text_splitter = RecursiveCharacterTextSplitter(
     add_start_index=True,
 )
 
-
-# =========================
-# VECTOR DB SETUP
-# =========================
 
 vector_store_clean = Chroma(
     collection_name="naturalcorpus",
@@ -176,10 +169,6 @@ print("Embedding model:", embedder_cfg["model"])
 print("Clean DB:", CLEAN_DB)
 print("Documents in clean Chroma:", vector_store_clean._collection.count())
 
-
-# =========================
-# POISONED DB SETUP
-# =========================
 
 vector_store_poisoned = None
 
@@ -284,9 +273,7 @@ def prepare_queries_and_docs():
     print(f"Prepared {len(queries)} queries from CoE_content.csv for stance {TARGET_STANCE}")
 
 
-# =========================
-# RAG TOOL
-# =========================
+
 
 @tool(response_format="content_and_artifact")
 def retrieve_context(query: str):
@@ -300,10 +287,6 @@ def retrieve_context(query: str):
 
     return serialized, retrieved_docs
 
-
-# =========================
-# MAIN
-# =========================
 
 def main():
     if BUILD_NEW_DOCS:

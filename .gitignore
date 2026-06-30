@@ -2,3 +2,7 @@ data/msmarco-docs.tsv
 data/
 .venv/
 __pycache__/
+chroma_db_nomic
+chroma_db_qwen3_embedding_4b
+chroma_poisoned_db_nomic
+chroma_poisoned_db_qwen3_embedding_4b
