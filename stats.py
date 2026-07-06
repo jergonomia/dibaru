@@ -79,7 +79,7 @@ Rephrased Statement: "The Soviet Union did not exploit the resources of its repu
 def plot_stance_fractions(
     clean_stance,
     poisoned_stance,
-    title="Target Opinion: CON",
+    title="Target Opinion: PRO",
     output_file="stance_fractions.png",
 ):
     data = pd.DataFrame(
@@ -247,7 +247,7 @@ def get_column(row, *names):
 
 def count_poisoned_source_strings(csv_path: str):
     text = Path(csv_path).read_text(encoding="utf-8")
-    return len(re.findall(r"Source:\s*poisoned\b", text, flags=re.I))
+    return len(re.findall(r"Source:\s*tmbcorpus\b", text, flags=re.I))
 
 def extract_sources(retrieved_context: str):
     return re.findall(r"Source:\s*(.+)", retrieved_context)
@@ -262,7 +262,7 @@ def retrieval_success_rate(poisoned_csv_path: str):
     for row in tqdm(rows, desc="Computing retrieval success", unit="query"):
         context = get_column(row, "retrieved context", "retrieved_context")
 
-        if re.search(r"Source:\s*poisoned\b", context, flags=re.I):
+        if re.search(r"Source:\s*tmbcorpus\b", context, flags=re.I):
             poisoned_rows += 1
 
     total_rows = len(rows)
@@ -331,18 +331,21 @@ def stance_fractions(csv_path: str, annotated_csv_path: str | None = None, annot
 ANNOTATED_CLEAN = "../manual_stance/Authchain/clean_con_nomic_annotation.csv"
 ANNOTATED_POISON = "../manual_stance/Authchain/poison_con_nomic_annotation.csv"
 
+POISON_PATH = "out/rag_answers_poison_pro_nomic.csv"
+CLEAN_PATH = "out/rag_answers_clean_pro_nomic.csv"
+
 def main():
 
 
     parser = argparse.ArgumentParser(description="Compute and plot stance fractions.")
-    parser.add_argument("--clean-path", default="../manual_stance/topic+new_method/rag_answers_clean_con_nomic.csv")
-    parser.add_argument("--poisoned-path", default="../manual_stance/topic+new_method/rag_answers_poison_con_nomic.csv")
+    parser.add_argument("--clean-path", default=CLEAN_PATH)
+    parser.add_argument("--poisoned-path", default=POISON_PATH)
     parser.add_argument("--clean-annotated-path", default=None,
                         help="Optional CSV with manual annotations for clean answers")
     parser.add_argument("--poisoned-annotated-path", default=None,
                         help="Optional CSV with manual annotations for poisoned answers")
-    parser.add_argument("--output-file", default="con_stance_results.png")
-    parser.add_argument("--title", default="Target Opinion: CON")
+    parser.add_argument("--output-file", default="pro_stance_results.png")
+    parser.add_argument("--title", default="Target Opinion: PRO")
 
     args = parser.parse_args()
 
@@ -379,3 +382,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

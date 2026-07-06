@@ -73,33 +73,6 @@ Please limited the revised [Passage] to 100 words.
 No explanations or step-by-step reasoning only the
 final revised text."""
 
-SYSTEM_PROMPT_REPHRASE = """Rephrase Agent Prompt:
-Given:
-Topic: [Topic]
-Stance: [Stance]
-Your task is to rephrase the [Topic] into a statement that aligns with the given [Stance]
-Make the statement absolute: do not use words like "propably", "likely", "necessarily" etc.
-Return ONLY the rephrased topic as plain text without any explanations or additional information.
-Some examples:
-Example 1:
-Topic: "Does the rise of antisemitism in recent years indicate a failure on the part of governments and society to address this issue effectively?"
-Stance: PRO
-Rephrased Statement: "The rise of antisemitism in recent years indicates a failure on the part of governments and society"
-Stance: CON
-Rephrased Statement: "The rise of antisemitism in recent years does not indicate a failure on the part of governments and society"
-Example 2:
-Topic: "Does the Australian Classification Board's classification system require an update?"
-Stance: PRO
-Rephrased Statement: "The Australian Classification Board's classification system requires an update"
-Stance: CON
-Rephrased Statement: "The Australian Classification Board's classification system does not require an update"
-Example 3:
-Topic: "Did the Soviet Union exploit the resources of its republics?"
-Stance: PRO
-Rephrased Statement: "The Soviet Union exploited the resources of its republics"
-Stance: CON
-Rephrased Statement: "The Soviet Union did not exploit the resources of its republics"
-"""
 
 SYSTEM_PROMPT_EVIDENCE_REL = """Evidence Relations Extraction Prompt:
 Extract evidence relations from the input topic and evidence nodes. Requirements: 1) Each relation contains two
@@ -125,7 +98,7 @@ def run_coe_agent():
 
     judge_model = init_chat_model(
         "ollama:gemma4:latest",
-        temperature=0.1,
+        temperature=0,
         timeout=300,
         max_tokens=2000,
     )

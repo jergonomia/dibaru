@@ -79,8 +79,7 @@ Question: [Question]
 Output:"""
 
 SYSTEM_PROMPT_REPHRASE = """Please rephrase the topic 
-to be more specific and clear, while maintaining the original intent.
-The topic should be rephrased in a way that it can be answered by either a yes or no answer.
+so that it can be answered by a simple yes or no answer, while keeping word substitutions minimal.
 If the topic can already be answered by a yes or no answer, keep it unchanged.
 Return ONLY the rephrased topic as plain text without any explanations or additional information.
 Here are some examples:
@@ -130,13 +129,14 @@ Rephrased Statement: "The Soviet Union did not exploit the resources of its repu
 """
 
 
-def sample_questions(json_path: str, json_path2: str, n: int = 10):
+def sample_questions(json_path: str, json_path2: str, json_path3: str, n: int = 10):
     path = Path(json_path)
     path2= Path(json_path2)
+    path3 = Path(json_path3)
 
     questions = []
 
-    with path.open("r", encoding="utf-8") as f:
+    """with path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -145,9 +145,20 @@ def sample_questions(json_path: str, json_path2: str, n: int = 10):
             item = json.loads(line)
 
             if "text" in item and item["text"]:
-                questions.append(item["text"])
+                questions.append(item["text"])"""
 
-    with path2.open("r", encoding="utf-8") as f:
+    """with path2.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            item = json.loads(line)
+
+            if "text" in item and item["text"]:
+                questions.append(item["text"])"""
+    
+    with path3.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -163,7 +174,33 @@ def sample_questions(json_path: str, json_path2: str, n: int = 10):
     return sampled
 
 
-def run_intent_agent(target_stance):
+import re
+
+def parse_llm_json(raw):
+    if isinstance(raw, list):
+        raw_text = "\n".join(str(x) for x in raw)
+    else:
+        raw_text = str(raw)
+
+    raw_text = raw_text.strip()
+    raw_text = raw_text.replace("```json", "").replace("```", "").strip()
+
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+
+    print("Could not parse JSON:")
+    print(raw_text)
+    return {}
+
+
+def run_intent_agent(target_stance, n_questions):
     model = init_chat_model(
         "ollama:gemma4:latest",
         temperature=0.1,
@@ -175,25 +212,25 @@ def run_intent_agent(target_stance):
         "ollama:gemma4:latest",
         temperature=0,
         timeout=300,
-        max_tokens=300,
+        max_tokens=500,
     )
 
     paraphrase_model = init_chat_model(
         "ollama:gemma4:latest",
-        temperature=0.1,
+        temperature=0,
         timeout=300,
         max_tokens=100,
     )
 
     state_model = init_chat_model(
         "ollama:gemma4:latest",
-        temperature=0.1,
+        temperature=0,
         timeout=300,
         max_tokens=100,
     )
 
 
-    questions = sample_questions("data/naturalqueries.jsonl", "data/syntheticqueries.jsonl", 10)
+    questions = sample_questions("data/naturalqueries.jsonl", "data/syntheticqueries.jsonl", "data/procon_queries.jsonl", n_questions)
     extract_path = Path("out/extracted_intents.csv")
     with extract_path.open("w", newline="", encoding="utf-8") as exfile:
         ex_writer = csv.DictWriter(exfile, fieldnames=["idx", "topic", "intent", "evidence_nodes"])
@@ -217,15 +254,7 @@ def run_intent_agent(target_stance):
             res = extract_model.invoke(messages)
 
             raw = res.content.strip()
-
-            if isinstance(raw, list):
-                raw_text = "\n".join(str(x) for x in raw)
-            else:
-                raw_text = str(raw)
-            try:
-                extracted = json.loads(raw_text)
-            except json.JSONDecodeError:
-                extracted = {"raw_output": raw_text}
+            extracted = parse_llm_json(raw)
 
             print(extracted)
 
@@ -288,27 +317,7 @@ def run_intent_agent(target_stance):
             res = model.invoke(messages)
 
             raw = res.content.strip()
-
-            raw = raw.replace("```json", "").replace("```", "").strip()
-
-            try:
-                parsed = json.loads(raw)
-
-            except json.JSONDecodeError:
-                import re
-                match = re.search(r"\{.*\}", raw, re.DOTALL)
-
-                if match:
-                    try:
-                        parsed = json.loads(match.group(0))
-                    except json.JSONDecodeError:
-                        print("Could not parse extracted JSON:")
-                        print(raw)
-                        parsed = {}
-                else:
-                    print("No JSON found:")
-                    print(raw)
-                    parsed = {}
+            parsed = parse_llm_json(raw)
 
             corpus = parsed.get("Corpus", "")
 
