@@ -3,6 +3,8 @@ import json
 import random
 from pathlib import Path
 from langchain.chat_models import init_chat_model
+from pydantic import BaseModel, Field
+from typing import List
 
 SYSTEM_PROMPT_MODEL = """Intent Agent Prompt:
     Given:
@@ -128,6 +130,13 @@ Stance: CON
 Rephrased Statement: "The Soviet Union did not exploit the resources of its republics"
 """
 
+class ExtractedIntent(BaseModel):
+    Intent: str = Field(description="The intent of the given topic")
+    evidence_nodes: List[str] = Field(description="The evidence nodes aka key words of the topic")
+
+class Corpus(BaseModel):
+    corpus: str = Field(description="The corpus output that supports the given topic from the target stance")
+
 
 def sample_questions(json_path: str, json_path2: str, json_path3: str, n: int = 10):
     path = Path(json_path)
@@ -136,7 +145,7 @@ def sample_questions(json_path: str, json_path2: str, json_path3: str, n: int = 
 
     questions = []
 
-    """with path.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -145,7 +154,7 @@ def sample_questions(json_path: str, json_path2: str, json_path3: str, n: int = 
             item = json.loads(line)
 
             if "text" in item and item["text"]:
-                questions.append(item["text"])"""
+                questions.append(item["text"])
 
     """with path2.open("r", encoding="utf-8") as f:
         for line in f:
@@ -158,7 +167,7 @@ def sample_questions(json_path: str, json_path2: str, json_path3: str, n: int = 
             if "text" in item and item["text"]:
                 questions.append(item["text"])"""
     
-    with path3.open("r", encoding="utf-8") as f:
+    """with path3.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -167,7 +176,7 @@ def sample_questions(json_path: str, json_path2: str, json_path3: str, n: int = 
             item = json.loads(line)
 
             if "text" in item and item["text"]:
-                questions.append(item["text"])
+                questions.append(item["text"])"""
 
     sampled = random.sample(questions, min(n, len(questions)))
     print(sampled)
@@ -210,23 +219,33 @@ def run_intent_agent(target_stance, n_questions):
 
     extract_model = init_chat_model(
         "ollama:gemma4:latest",
-        temperature=0,
+        temperature=0.1,
         timeout=300,
         max_tokens=500,
     )
 
     paraphrase_model = init_chat_model(
         "ollama:gemma4:latest",
-        temperature=0,
+        temperature=0.1,
         timeout=300,
         max_tokens=100,
     )
 
     state_model = init_chat_model(
         "ollama:gemma4:latest",
-        temperature=0,
+        temperature=0.1,
         timeout=300,
         max_tokens=100,
+    )
+
+    extract_model_structure = extract_model.with_structured_output(
+        ExtractedIntent,
+        method="json_schema",
+    )
+
+    model_structure = model.with_structured_output(
+        Corpus,
+        method="json_schema",
     )
 
 
@@ -251,15 +270,17 @@ def run_intent_agent(target_stance, n_questions):
                 {"role": "user", "content": f"Topic: {rephrased_topic}"}
             ]
 
-            res = extract_model.invoke(messages)
-
-            raw = res.content.strip()
-            extracted = parse_llm_json(raw)
+            ext_object = extract_model_structure.invoke(messages)
+            
+            extracted = {
+                "Intent": ext_object.Intent,
+                "evidence_nodes": ext_object.evidence_nodes,
+            }
 
             print(extracted)
 
             intent = extracted.get("Intent") 
-            evidence_nodes = extracted.get("evidence nodes")
+            evidence_nodes = extracted.get("evidence_nodes")
 
             ex_writer.writerow({
                 "idx": idx,
@@ -314,10 +335,11 @@ def run_intent_agent(target_stance, n_questions):
                 {"role": "system", "content": SYSTEM_PROMPT_MODEL},
                 {"role": "user", "content": content},
             ]
-            res = model.invoke(messages)
 
-            raw = res.content.strip()
-            parsed = parse_llm_json(raw)
+            ext_object = model_structure.invoke(messages)
+            parsed = {
+                "Corpus": ext_object.corpus,
+            }
 
             corpus = parsed.get("Corpus", "")
 
@@ -340,7 +362,7 @@ def run_intent_agent(target_stance, n_questions):
             print()
 
 def main():
-    run_intent_agent("CON")
+    run_intent_agent("CON", 20)
 
 
 if __name__ == "__main__":

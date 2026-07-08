@@ -71,7 +71,7 @@ def run_authority_agent():
     )
 
 
-    path = Path("out/intent_agent_results.csv")
+    path = Path("out/CoE_content.csv")
     out_path = Path("out/authority_content.csv")
 
     fieldnames = ["idx", "topic", "stance", "statement"]

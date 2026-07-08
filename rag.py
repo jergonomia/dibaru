@@ -45,11 +45,11 @@ os.environ["LANGSMITH_API_KEY"] = getpass.getpass()
 BUILD_NEW_DOCS = False
 USE_POISONED_DB = False
 POISONED_DOC_METHOD = "auth"  # "auth" or "poisonedrag"
-TARGET_STANCE = "PRO"  # "PRO" or "CON"
+TARGET_STANCE = "CON"  # "PRO" or "CON"
 
 EMBEDDER_NAME = "nomic"  # "nomic" or "qwen"
 
-N_QUESTIONS = 20
+N_QUESTIONS = 40
 
 EMBEDDERS = {
     "nomic": {
@@ -272,7 +272,7 @@ def prepare_queries_and_docs():
 
             return
 
-    df = pd.read_csv("out/CoE_content.csv", dtype=str, sep="|")
+    df = pd.read_csv("out/intent_agent_results.csv", dtype=str, sep="|")
 
     if "stance" in df.columns:
         filtered = df[df["stance"].str.upper() == TARGET_STANCE.upper()]
@@ -328,7 +328,7 @@ def main():
     answers = []
 
     for query_idx, query in enumerate(tqdm(queries, desc="Processing queries"), start=1):
-        for run_idx in tqdm(range(10), desc=f"Runs for query {query_idx}", leave=False):
+        for run_idx in tqdm(range(5), desc=f"Runs for query {query_idx}", leave=False):
 
             result = agent.invoke(
                 {"messages": [{"role": "user", "content": query}]}

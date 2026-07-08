@@ -331,8 +331,8 @@ def stance_fractions(csv_path: str, annotated_csv_path: str | None = None, annot
 ANNOTATED_CLEAN = "../manual_stance/Authchain/clean_con_nomic_annotation.csv"
 ANNOTATED_POISON = "../manual_stance/Authchain/poison_con_nomic_annotation.csv"
 
-POISON_PATH = "out/rag_answers_poison_pro_nomic.csv"
-CLEAN_PATH = "out/rag_answers_clean_pro_nomic.csv"
+POISON_PATH = "out/rag_answers_poison_con_nomic.csv"
+CLEAN_PATH = "out/rag_answers_clean_con_nomic.csv"
 
 def main():
 
@@ -344,8 +344,8 @@ def main():
                         help="Optional CSV with manual annotations for clean answers")
     parser.add_argument("--poisoned-annotated-path", default=None,
                         help="Optional CSV with manual annotations for poisoned answers")
-    parser.add_argument("--output-file", default="pro_stance_results.png")
-    parser.add_argument("--title", default="Target Opinion: PRO")
+    parser.add_argument("--output-file", default="con_stance_results.png")
+    parser.add_argument("--title", default="Target Opinion: CON")
 
     args = parser.parse_args()
 

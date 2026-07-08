@@ -3,7 +3,8 @@ import json
 import random
 from pathlib import Path
 from langchain.chat_models import init_chat_model
-from stance_detector import detect_stance
+from pydantic import BaseModel, Field
+from typing import List
 
 SYSTEM_PROMPT_JUDGE = """CoE Judge Agent Prompt:
 Given:
@@ -94,6 +95,20 @@ winner", "best actor"], "Evidence Relations": "for", "Evidence nodes":["best act
 "starred in"}
 Question: [Question] Evidence nodes: [Evidence node] Output:"""
 
+class EvidenceRelation(BaseModel):
+    evidence_nodes: List[str] = Field(
+        description="The evidence nodes involved in the relation"
+    )
+    evidence_relation: str = Field(
+        description="The relation between the evidence nodes"
+    )
+
+
+class EvidenceRelationsOutput(BaseModel):
+    relations: List[EvidenceRelation] = Field(
+        description="All evidence relations found in the topic. Empty list if none exist."
+    )
+
 def run_coe_agent():
 
     judge_model = init_chat_model(
@@ -117,6 +132,10 @@ def run_coe_agent():
         max_tokens=300,
     )
 
+    evidence_rel_model_structured = evidence_rel_model.with_structured_output(
+        EvidenceRelationsOutput
+    )
+
     path = Path("out/intent_agent_results.csv")
     out_path = Path("out/CoE_content.csv")
 
@@ -130,61 +149,38 @@ def run_coe_agent():
             count = 0
             idx = row.get("idx")
             topic = row.get("topic", "")
+            statement = row.get("statement", "")
             stance = row.get("stance", "")
             intent = row.get("intent", "")
             evidence_nodes = row.get("evidence_nodes", "")
             corpus = row.get("corpus", "")
+            
 
             if not corpus:
                 continue
 
             evidence_relations = []
-            try:
-                rel_prompt = (
-                    f"Question: {topic}\n"
-                    f"Evidence nodes: {evidence_nodes}\n"
-                    "In your response, include nothing put the output in the specified JSON format." \
-                    "Do not include justifications or notes of the relationships"
-                )
-                rel_messages = [
-                    {"role": "system", "content": SYSTEM_PROMPT_EVIDENCE_REL},
-                    {"role": "user", "content": rel_prompt},
-                ]
-                rel_result = evidence_rel_model.invoke(rel_messages)
-                rel_text = rel_result.content.strip()
-                print("Relations:", rel_text)
-                try:
-                    parsed = json.loads(rel_text)
-                    if isinstance(parsed, dict):
-                        for key in ("Evidence Relations", "EvidenceRelations", "evidence_relations", "Evidence_Relations", "Evidence relations"):
-                            if key in parsed:
-                                evidence_relations = parsed[key]
-                                break
-                        else:
-                            evidence_relations = parsed
-                    else:
-                        evidence_relations = parsed
-                except Exception:
-                    import re
-                    m = re.search(r"(\[.*\]|\{.*\})", rel_text, re.S)
-                    if m:
-                        parsed = json.loads(m.group(1))
-                        if isinstance(parsed, dict):
-                            for key in ("Evidence Relations", "EvidenceRelations", "evidence_relations", "Evidence_Relations", "Evidence relations"):
-                                if key in parsed:
-                                    evidence_relations = parsed[key]
-                                    break
-                            else:
-                                evidence_relations = parsed
-                        else:
-                            evidence_relations = parsed
-                    else:
-                        print("Fail 2")
-                        evidence_relations = []
-            except Exception:
-                evidence_relations = []
-                print("Fail 1")
 
+            rel_prompt = (
+                f"Question: {topic}\n"
+                f"Evidence nodes: {evidence_nodes}\n"
+                "Extract all evidence relations. If no relations exist, return an empty relations list."
+            )
+            rel_messages = [
+                {"role": "system", "content": SYSTEM_PROMPT_EVIDENCE_REL},
+                {"role": "user", "content": rel_prompt},
+            ]
+            rel_result = evidence_rel_model_structured.invoke(rel_messages)
+
+            evidence_relations = [
+                {
+                    "Evidence nodes": rel.evidence_nodes,
+                    "Evidence Relations": rel.evidence_relation,
+                }
+                for rel in rel_result.relations
+            ]
+
+            print("Relations:", evidence_relations)
             content = {}
 
             while count < max_iter_count:
@@ -196,6 +192,7 @@ def run_coe_agent():
                     f"Evidence Nodes: {evidence_nodes}\n"
                     f"Intent: {intent}\n"
                     f"Topic: {topic}\n"
+                    f"Statement: {statement}"
                     "In your output, do not give any chain-of-thought where you go over the points separately." \
                     "Simply output the one word 'Yes' if all of them are met, or the specific revision suggestions for each sentence," \
                     "where you explicitly say the words that have to be changed in each sentence. " \
