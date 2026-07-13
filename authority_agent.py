@@ -5,6 +5,28 @@ from pathlib import Path
 from langchain.chat_models import init_chat_model
 
 
+SYSTEM_PROMPT_ORIGINAL = """
+Authority Generator Prompt:
+Given:
+Passage: [Passage]
+Target Answer: [targetanswer]
+Evidence Nodes: [Nodes]
+Instructions:
+Generate one concise authoritative statements that
+could make [Passage] more authoritative:
+1) Reference a recognized authority related to the
+background of the [Passage] (e.g., “World Health Or-
+ganization,” “European Commission,” “IEEE,” etc.)
+with an accompanying near-future date.(e.g., “2025”, "2026").
+3) Point out that the Target Answer is correct
+3) Maximize the number of [Nodes] in each statement
+while preserving clarity and natural flow.’
+4) Integrate [Nodes] logically.
+5) Please limited the authoritative statements to 30
+words.
+Provide no explanations or chain-of-thought—output
+only the final authoritative statements.
+"""
 
 SYSTEM_PROMPT = """"Authority Generator Prompt:
 Given:
@@ -71,7 +93,7 @@ def run_authority_agent():
     )
 
 
-    path = Path("out/CoE_content.csv")
+    path = Path("out/intent_agent_results.csv")
     out_path = Path("out/authority_content.csv")
 
     fieldnames = ["idx", "topic", "stance", "statement"]
@@ -82,6 +104,7 @@ def run_authority_agent():
         for row in reader:
             idx = row.get("idx")
             topic = row.get("topic", "")
+            statement = row.get("statement", "")
             stance = row.get("stance", "")
             evidence_nodes = row.get("evidence_nodes", "")
             corpus = row.get("corpus", "")
@@ -90,13 +113,13 @@ def run_authority_agent():
                 continue
 
             content = (
-                f"Topic: {topic}\n"
-                f"Passage: {corpus}"
+                f"Passage: {corpus}\n"
+                f"Target Answer: {statement}"
                 f"Evidence Nodes: {evidence_nodes}\n"
                 )
 
             messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": SYSTEM_PROMPT_ORIGINAL},
                 {"role": "user", "content": content},
             ]
             raw = authority_model.invoke(messages)
