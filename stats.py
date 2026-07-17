@@ -275,13 +275,20 @@ def retrieval_success_rate(poisoned_csv_path: str):
     }
 
 
-def stance_fractions(csv_path: str, annotated_csv_path: str | None = None, annotation_col_candidates=None,):
+def stance_fractions(csv_path: str, annotated_csv_path: str | None = None, annotation_col_candidates=None, output_csv_path: str | None = None):
         if annotation_col_candidates is None:
             annotation_col_candidates = [
                 "stance"
             ]
 
+        def parse_int_value(value, default=None):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
         counts = Counter()
+        evaluated_stances = []
 
         with open(csv_path, "r", encoding="utf-8", newline="") as f:
             content_rows = list(csv.DictReader(f))
@@ -318,7 +325,30 @@ def stance_fractions(csv_path: str, annotated_csv_path: str | None = None, annot
             if label == "UNK":
                 label = "NEU"
 
+            query_idx = parse_int_value(get_column(row, "query_idx"))
+            if query_idx is None:
+                query_idx = idx // 10 + 1
+
+            run_idx = parse_int_value(get_column(row, "run_idx"))
+            if run_idx is None:
+                run_idx = idx % 10 + 1
+
             counts[label] += 1
+            evaluated_stances.append({
+                "query_idx": query_idx,
+                "run_idx": run_idx,
+                "stance": label
+            })
+
+        # Save evaluated stances to CSV if output path is provided
+        if output_csv_path:
+            output_path = Path(output_csv_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["query_idx", "run_idx", "stance"])
+                writer.writeheader()
+                writer.writerows(evaluated_stances)
+            print(f"Saved evaluated stances to: {output_path}")
 
         return {
             "PRO": counts["PRO"] / total if total else 0,
@@ -331,8 +361,25 @@ def stance_fractions(csv_path: str, annotated_csv_path: str | None = None, annot
 ANNOTATED_CLEAN = "../manual_stance/Authchain/clean_con_nomic_annotation.csv"
 ANNOTATED_POISON = "../manual_stance/Authchain/poison_con_nomic_annotation.csv"
 
-POISON_PATH = "out/rag_answers_poison_con_nomic.csv"
-CLEAN_PATH = "out/rag_answers_clean_con_nomic.csv"
+TARGET_STANCE = "pro"  # Toggle between "pro" or "con" as needed
+EMBEDDER = "qwen"  # Toggle between "nomic" or "qwen" as needed
+
+POISON_PATH = f"out/rag_answers_poison_{TARGET_STANCE}_{EMBEDDER}.csv"
+CLEAN_PATH = f"out/rag_answers_clean_{TARGET_STANCE}_{EMBEDDER}.csv"
+
+def generate_output_filename(input_csv_path: str) -> str:
+    """
+    Generate output filename from input CSV path.
+    Maps hardcoded globals to their annotation output paths.
+    """
+    if input_csv_path == POISON_PATH:
+        return f"out/poison_{TARGET_STANCE}_{EMBEDDER}_annotation.csv"
+    elif input_csv_path == CLEAN_PATH:
+        return f"out/clean_{TARGET_STANCE}_{EMBEDDER}_annotation.csv"
+    else:
+        # Fallback for non-standard paths
+        path = Path(input_csv_path)
+        return str(path.parent / (path.stem + "_annotation.csv"))
 
 def main():
 
@@ -344,18 +391,22 @@ def main():
                         help="Optional CSV with manual annotations for clean answers")
     parser.add_argument("--poisoned-annotated-path", default=None,
                         help="Optional CSV with manual annotations for poisoned answers")
-    parser.add_argument("--output-file", default="con_stance_results.png")
-    parser.add_argument("--title", default="Target Opinion: CON")
+    parser.add_argument("--output-file", default=f"{TARGET_STANCE}_stance_results.png")
+    parser.add_argument("--title", default=f"Target Opinion: {TARGET_STANCE.upper()}")
 
     args = parser.parse_args()
 
     clean_path = args.clean_path
     poisoned_path = args.poisoned_path
 
+    # Generate output filenames for evaluated stances
+    clean_output_path = generate_output_filename(clean_path)
+    poisoned_output_path = generate_output_filename(poisoned_path)
+
     retrieval_metrics = retrieval_success_rate(poisoned_path)
 
-    clean_stance = stance_fractions(clean_path, annotated_csv_path=args.clean_annotated_path)
-    poisoned_stance = stance_fractions(poisoned_path, annotated_csv_path=args.poisoned_annotated_path)
+    clean_stance = stance_fractions(clean_path, annotated_csv_path=args.clean_annotated_path, output_csv_path=clean_output_path)
+    poisoned_stance = stance_fractions(poisoned_path, annotated_csv_path=args.poisoned_annotated_path, output_csv_path=poisoned_output_path)
 
     print("\n=== Retrieval Metrics ===")
     for key, value in retrieval_metrics.items():

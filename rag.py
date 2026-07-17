@@ -47,14 +47,14 @@ USE_POISONED_DB = False
 POISONED_DOC_METHOD = "auth"  # "auth" or "poisonedrag"
 TARGET_STANCE = "PRO"  # "PRO" or "CON"
 
-USE_NATURAL_ONLY_DB = False
+USE_NATURAL_ONLY_DB = True
 
-EMBEDDER_NAME = "nomic"  # "nomic" or "qwen"
+EMBEDDER_NAME = "qwen"  # "nomic" or "qwen"
 
 N_QUESTIONS = 40
 
 # Switch between agent-based RAG (with retrieve_context tool) and LLM-only mode
-USE_AGENT_RAG = True  # Set to False to use basic LLM without agent/tool
+USE_AGENT_RAG = False  # Set to False to use basic LLM without agent/tool
 
 EMBEDDERS = {
     "nomic": {
@@ -119,6 +119,7 @@ vector_store_clean = Chroma(
     collection_name="naturalcorpus",
     embedding_function=embedding,
     persist_directory=str(CLEAN_DB),
+    collection_metadata={"hnsw:space": "cosine"},
 )
 
 
@@ -361,6 +362,11 @@ def main():
         run_authority_agent()
 
     prepare_queries_and_docs()
+
+    import numpy as np
+
+    vec = embedding.embed_query("hello world")
+    print(np.linalg.norm(vec))
 
     answers = []
 

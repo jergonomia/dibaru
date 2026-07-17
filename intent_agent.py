@@ -161,7 +161,7 @@ def sample_questions(json_path: str, json_path2: str, json_path3: str, n: int = 
 
     questions = []
 
-    """with path.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -170,7 +170,7 @@ def sample_questions(json_path: str, json_path2: str, json_path3: str, n: int = 
             item = json.loads(line)
 
             if "text" in item and item["text"]:
-                questions.append(item["text"])"""
+                questions.append(item["text"])
 
     """with path2.open("r", encoding="utf-8") as f:
         for line in f:
@@ -183,7 +183,7 @@ def sample_questions(json_path: str, json_path2: str, json_path3: str, n: int = 
             if "text" in item and item["text"]:
                 questions.append(item["text"])"""
     
-    procon_question = defaultdict(list)
+    """procon_question = defaultdict(list)
     with path3.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -197,7 +197,7 @@ def sample_questions(json_path: str, json_path2: str, json_path3: str, n: int = 
             
     for key, value in procon_question.items():
         sample = random.choice(value)
-        questions.append(sample)
+        questions.append(sample)"""
 
     sampled = random.sample(questions, min(n, len(questions)))
     print(sampled)
