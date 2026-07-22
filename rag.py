@@ -43,8 +43,8 @@ os.environ["LANGSMITH_API_KEY"] = getpass.getpass()
 
 
 BUILD_NEW_DOCS = False
-USE_POISONED_DB = False
-POISONED_DOC_METHOD = "auth"  # "auth" or "poisonedrag"
+USE_POISONED_DB = True
+POISONED_DOC_METHOD = "poisonedrag"  # "auth" or "poisonedrag"
 TARGET_STANCE = "PRO"  # "PRO" or "CON"
 
 USE_NATURAL_ONLY_DB = True

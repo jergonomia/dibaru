@@ -19,6 +19,7 @@ from langchain_chroma import Chroma
 from intent_agent import run_intent_agent
 from CoEagent import run_coe_agent
 from authority_agent import run_authority_agent
+from PoisonedRAG import run_agent
 
 
 SYSTEM_PROMPT_REPHRASE = """Rewrite the following topic while preserving
@@ -43,11 +44,11 @@ os.environ["LANGSMITH_API_KEY"] = getpass.getpass()
 
 
 BUILD_NEW_DOCS = False
-USE_POISONED_DB = True
+USE_POISONED_DB = False
 POISONED_DOC_METHOD = "auth"  # "auth" or "poisonedrag"
 TARGET_STANCE = "CON"  # "PRO" or "CON"
 
-EMBEDDER_NAME = "nomic"  # "nomic" or "qwen"
+EMBEDDER_NAME = "qwen"  # "nomic" or "qwen"
 
 # Switch between agent-based RAG (with retrieve_context tool) and LLM-only mode
 USE_AGENT_RAG = False  # Set to False to use basic LLM without agent/tool
@@ -338,6 +339,8 @@ def main():
         run_intent_agent(TARGET_STANCE, N_QUESTIONS)
         run_coe_agent()
         run_authority_agent()
+        if POISONED_DOC_METHOD == "poisonedrag":
+            run_agent(TARGET_STANCE, 10)
 
     prepare_queries_and_docs()
 

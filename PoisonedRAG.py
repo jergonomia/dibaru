@@ -18,7 +18,7 @@ class Corpus(BaseModel):
     corpus: str = Field(description="The corpus output that supports the given topic from the target stance")
 
 
-def run_intent_agent(target_stance, iterations=50):
+def run_agent(target_stance, iterations=50):
     model = init_chat_model(
         "ollama:gemma4:latest",
         temperature=0.1,
@@ -109,7 +109,7 @@ def run_intent_agent(target_stance, iterations=50):
 
 
 def main():
-    run_intent_agent("CON", 10)
+    run_agent("PRO", 40)
 
 
 if __name__ == "__main__":
