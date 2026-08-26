@@ -69,19 +69,19 @@ Rephrased Statement: "The Soviet Union exploited the resources of its republics"
 Stance: CON
 Rephrased Statement: "The Soviet Union did not exploit the resources of its republics"
 """
-
+model = init_chat_model(
+        "ollama:qwen2.5:7b",
+        temperature=0.1,
+        timeout=300,
+        max_tokens=1000,
+    )
 
 def detect_stance(passage: str, topic: str) -> str:
     """Detect stance for a single input sentence.
 
     Returns one of: "PRO", "CON", "NEU", "UNK".
     """
-    model = init_chat_model(
-        "ollama:qwen2.5:7b",
-        temperature=0.1,
-        timeout=300,
-        max_tokens=1000,
-    )
+
 
     content = (
         f"Passage: {passage}\n"

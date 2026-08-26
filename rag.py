@@ -15,6 +15,7 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
+from langchain_openrouter import ChatOpenRouter
 
 from intent_agent import run_intent_agent
 from CoEagent import run_coe_agent
@@ -38,18 +39,17 @@ import warnings
 warnings.filterwarnings("error")
 
 os.environ["LANGSMITH_TRACING"] = "false"
-os.environ["LANGSMITH_API_KEY"] = getpass.getpass()
 
 
 
 BUILD_NEW_DOCS = False
 USE_POISONED_DB = True
-POISONED_DOC_METHOD = "poisonedrag"  # "auth" or "poisonedrag"
-TARGET_STANCE = "PRO"  # "PRO" or "CON"
+POISONED_DOC_METHOD = "prompt_injection"  # "auth", "poisonedrag", or "prompt_injection"
+TARGET_STANCE = "CON"  # "PRO" or "CON"
 
 USE_NATURAL_ONLY_DB = True
 
-EMBEDDER_NAME = "qwen"  # "nomic" or "qwen"
+EMBEDDER_NAME = "nomic"  # "nomic" or "qwen"
 
 N_QUESTIONS = 40
 
@@ -258,28 +258,42 @@ def prepare_queries_and_docs():
             a = pd.read_csv("out/authority_content.csv", dtype=str, sep="|")
             d = pd.read_csv("out/PoisonedRAG_results.csv", dtype=str, sep="|")
 
-            m = a.merge(b, on=["idx", "topic", "stance"], how="left")
-            m = m.merge(d, on=["idx", "topic", "stance"], how="left")
-
-            if POISONED_DOC_METHOD == "auth":
-                m["poisoned_doc"] = (
-                    m["statement_x"].fillna("")
+            if POISONED_DOC_METHOD == "prompt_injection":
+                p = pd.read_csv("out/prompt_injection_results.csv", dtype=str, sep="|")
+                p["poisoned_doc"] = (
+                    p["topic"].fillna("")
                     + "\n"
-                    + m["corpus"].fillna("")
+                    + p["corpus"].fillna("")
                 ).str.strip()
-            elif POISONED_DOC_METHOD == "poisonedrag":
-                m["poisoned_doc"] = (
-                    m["topic"].fillna("")
-                    + "\n"
-                    + m["poisoned"].fillna("")
-                ).str.strip()
+                poisoned_csv = p
+            else:
+                m = a.merge(b, on=["idx", "topic", "stance"], how="left")
+                m = m.merge(d, on=["idx", "topic", "stance"], how="left")
 
-            m.to_csv("out/poisoned_docs.csv", index=False, sep="|")
+                if POISONED_DOC_METHOD == "auth":
+                    m["poisoned_doc"] = (
+                        m["statement_x"].fillna("")
+                        + "\n"
+                        + m["corpus"].fillna("")
+                    ).str.strip()
+                elif POISONED_DOC_METHOD == "poisonedrag":
+                    m["poisoned_doc"] = (
+                        m["topic"].fillna("")
+                        + "\n"
+                        + m["poisoned"].fillna("")
+                    ).str.strip()
+                else:
+                    raise ValueError(f"Unsupported POISONED_DOC_METHOD: {POISONED_DOC_METHOD}")
+
+                poisoned_csv = m
+
+            poisoned_csv.to_csv("out/poisoned_docs.csv", index=False, sep="|")
 
             poisoned_csv = Path("out/poisoned_docs.csv")
 
             if poisoned_csv.exists():
                 poison_docs = []
+                prepared_topics = []
 
                 with poisoned_csv.open("r", encoding="utf-8") as pf:
                     for row in csv.DictReader(pf, delimiter="|"):
@@ -300,7 +314,10 @@ def prepare_queries_and_docs():
                             )
                         )
 
-                        queries.append(topic)
+                        if topic:
+                            prepared_topics.append(topic)
+
+                queries = list(dict.fromkeys(prepared_topics))
 
                 if poison_docs:
                     batch_size = 64
@@ -316,16 +333,19 @@ def prepare_queries_and_docs():
 
             return
 
-    df = pd.read_csv("out/intent_agent_results.csv", dtype=str, sep="|")
+    df = pd.read_csv("out/poisoned_docs.csv", dtype=str, sep="|")
 
-    if "stance" in df.columns:
-        filtered = df[df["stance"].str.upper() == TARGET_STANCE.upper()]
+    if "topic" in df.columns:
+        queries = df["topic"].dropna().unique().tolist()
     else:
-        filtered = df
+        df = pd.read_csv("out/intent_agent_results.csv", dtype=str, sep="|")
+        if "stance" in df.columns:
+            filtered = df[df["stance"].str.upper() == TARGET_STANCE.upper()]
+        else:
+            filtered = df
+        queries = filtered["topic"].dropna().unique().tolist()
 
-    queries = filtered["topic"].dropna().unique().tolist()
-
-    print(f"Prepared {len(queries)} queries from CoE_content.csv for stance {TARGET_STANCE}")
+    print(f"Prepared {len(queries)} queries from poisoned_docs.csv for stance {TARGET_STANCE}")
 
 
 def retrieve_from_db(query: str):

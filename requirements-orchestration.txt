@@ -1,0 +1,9 @@
+pandas
+tqdm
+matplotlib
+pydantic
+langchain
+langchain-ollama
+langchain-chroma
+langchain-openrouter
+langchain-text-splitters

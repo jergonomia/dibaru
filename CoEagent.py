@@ -109,7 +109,10 @@ class EvidenceRelationsOutput(BaseModel):
         description="All evidence relations found in the topic. Empty list if none exist."
     )
 
-def run_coe_agent():
+def run_coe_agent(
+    input_path: str | Path = "out/intent_agent_results.csv",
+    output_path: str | Path = "out/CoE_content.csv",
+):
 
     judge_model = init_chat_model(
         "ollama:gemma4:latest",
@@ -136,8 +139,9 @@ def run_coe_agent():
         EvidenceRelationsOutput
     )
 
-    path = Path("out/intent_agent_results.csv")
-    out_path = Path("out/CoE_content.csv")
+    path = Path(input_path)
+    out_path = Path(output_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     max_iter_count = 10
     fieldnames = ["idx", "topic", "stance", "corpus"]

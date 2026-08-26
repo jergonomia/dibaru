@@ -15,11 +15,11 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
+from langchain_openrouter import ChatOpenRouter
 
 from intent_agent import run_intent_agent
 from CoEagent import run_coe_agent
 from authority_agent import run_authority_agent
-from PoisonedRAG import run_agent
 
 
 SYSTEM_PROMPT_REPHRASE = """Rewrite the following topic while preserving
@@ -43,32 +43,62 @@ os.environ["LANGSMITH_TRACING"] = "false"
 
 
 BUILD_NEW_DOCS = False
-USE_POISONED_DB = True
+USE_POISONED_DB = False
 POISONED_DOC_METHOD = "poisonedrag"  # "auth" or "poisonedrag"
-TARGET_STANCE = "CON"  # "PRO" or "CON"
+TARGET_STANCE = "PRO"  # "PRO" or "CON"
 
-EMBEDDER_NAME = "qwen"  # "nomic" or "qwen"
+USE_NATURAL_ONLY_DB = True
+
+EMBEDDER_NAME = "nomic"  # "nomic" or "qwen"
+
+N_QUESTIONS = 40
 
 # Switch between agent-based RAG (with retrieve_context tool) and LLM-only mode
 USE_AGENT_RAG = False  # Set to False to use basic LLM without agent/tool
 
-N_QUESTIONS = 40
-
 EMBEDDERS = {
     "nomic": {
         "model": "nomic-embed-text",
-        "clean_db": "chroma_db_nomic_procon",
-        "poisoned_db": "chroma_poisoned_db_nomic_procon",
+        "clean_db": "chroma_db_nomic",
+        "poisoned_db": "chroma_poisoned_db_nomic",
     },
     "qwen": {
         "model": "qwen3-embedding:4b",
-        "clean_db": "chroma_db_qwen3_embedding_4b_procon",
-        "poisoned_db": "chroma_poisoned_db_qwen3_embedding_4b_procon",
+        "clean_db": "chroma_db_qwen3_embedding_4b",
+        "poisoned_db": "chroma_poisoned_db_qwen3_embedding_4b",
     },
 }
 
+embedder_cfg = EMBEDDERS[EMBEDDER_NAME]
+
+# Base clean/poisoned DB paths from embedder config. If the
+# natural-only flag is set, we use a separate persist directory
+# name derived from the configured clean DB name with a suffix.
+CLEAN_DB = Path(embedder_cfg["clean_db"])
+POISONED_DB = Path(embedder_cfg["poisoned_db"])
+if USE_NATURAL_ONLY_DB:
+    CLEAN_DB = Path(f"{embedder_cfg['clean_db']}_natural")
+    POISONED_DB = Path(f"{embedder_cfg['poisoned_db']}_natural")
+
+model = ChatOllama(model="llama3.1:8b")
+embedding = OllamaEmbeddings(model=embedder_cfg["model"])
+
 # LLM-only model for non-agent RAG mode
-llm_model = ChatOllama(model="llama3.1:8b")
+OPENROUTER_MODEL = "openai/gpt-5.6-luna"
+
+if not os.getenv("OPENROUTER_API_KEY"):
+    os.environ["OPENROUTER_API_KEY"] = getpass.getpass(
+        "Enter your OpenRouter API key: "
+    )
+
+model = ChatOpenRouter(
+    model=OPENROUTER_MODEL,
+    temperature=0.1,
+    max_tokens=512,
+    max_retries=3,
+)
+
+llm_model = model
 
 # System prompt for agent-based RAG
 agent_system_prompt = (
@@ -92,14 +122,6 @@ llm_system_prompt = (
     "Answer:"
 )
 
-embedder_cfg = EMBEDDERS[EMBEDDER_NAME]
-
-CLEAN_DB = Path(embedder_cfg["clean_db"])
-POISONED_DB = Path(embedder_cfg["poisoned_db"])
-
-model = ChatOllama(model="llama3.1:8b")
-embedding = OllamaEmbeddings(model=embedder_cfg["model"])
-
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=1000,
     chunk_overlap=200,
@@ -108,7 +130,7 @@ text_splitter = RecursiveCharacterTextSplitter(
 
 
 vector_store_clean = Chroma(
-    collection_name="procon",
+    collection_name="naturalcorpus",
     embedding_function=embedding,
     persist_directory=str(CLEAN_DB),
     collection_metadata={"hnsw:space": "cosine"},
@@ -181,16 +203,31 @@ def add_documents_to_clean_db(jsonl_path: str, source_prefix: str | None = None)
 
 def init_db_natural():
     add_documents_to_clean_db(
-        "data/procon_corpus.jsonl",
-        source_prefix="procon_corpus.jsonl",
+        "data/naturalcorpus.jsonl",
+        source_prefix="naturalcorpus.jsonl",
     )
 
 
-if vector_store_clean._collection.count() == 0:
+count = vector_store_clean._collection.count()
+if count == 0:
     print(f"Creating clean DB using embedder: {EMBEDDER_NAME}")
     init_db_natural()
+    count = vector_store_clean._collection.count()
+
+if USE_NATURAL_ONLY_DB:
+    print("Natural-only DB mode enabled; skipping synthetic corpus addition.")
 else:
-    print("Vector store already exists, skipping embedding.")
+    # Only add the synthetic corpus when the DB has the expected
+    # size marker (this preserves previous behavior while allowing
+    # an explicit natural-only mode).
+    if count == 128932:
+        print("Adding synthetic corpus to existing database.")
+        add_documents_to_clean_db(
+            "data/syntheticcorpus.jsonl",
+            source_prefix="syntheticcorpus",
+        )
+    else:
+        print("Vector store already exists, skipping synthetic embedding.")
 
 
 print("Embedder:", EMBEDDER_NAME)
@@ -208,7 +245,7 @@ if USE_POISONED_DB:
     shutil.copytree(CLEAN_DB, POISONED_DB)
 
     vector_store_poisoned = Chroma(
-        collection_name="procon",
+        collection_name="naturalcorpus",
         embedding_function=embedding,
         persist_directory=str(POISONED_DB),
     )
@@ -293,7 +330,7 @@ def prepare_queries_and_docs():
 
             return
 
-    df = pd.read_csv("out/CoE_content.csv", dtype=str, sep="|")
+    df = pd.read_csv("out/intent_agent_results.csv", dtype=str, sep="|")
 
     if "stance" in df.columns:
         filtered = df[df["stance"].str.upper() == TARGET_STANCE.upper()]
@@ -303,8 +340,6 @@ def prepare_queries_and_docs():
     queries = filtered["topic"].dropna().unique().tolist()
 
     print(f"Prepared {len(queries)} queries from CoE_content.csv for stance {TARGET_STANCE}")
-
-
 
 
 def retrieve_from_db(query: str):
@@ -339,10 +374,13 @@ def main():
         run_intent_agent(TARGET_STANCE, N_QUESTIONS)
         run_coe_agent()
         run_authority_agent()
-        if POISONED_DOC_METHOD == "poisonedrag":
-            run_agent(TARGET_STANCE, 10)
 
     prepare_queries_and_docs()
+
+    import numpy as np
+
+    vec = embedding.embed_query("hello world")
+    print(np.linalg.norm(vec))
 
     answers = []
 
@@ -390,10 +428,19 @@ def main():
                 retrieved_context, _ = retrieve_from_db(query)
 
                 # Prepare messages for LLM
-                user_message = f"{query}\n\nContext:\n{retrieved_context}"
+                messages = [
+                    (
+                        "system",
+                        llm_system_prompt
+                    ),
+                    (
+                        "human",
+                        f"Question:\n{query}\n\n"
+                        f"Retrieved context:\n{retrieved_context}"
+                    ),
+                ]
 
-                # Invoke LLM with retrieved context
-                result = llm_model.invoke(user_message)
+                result = llm_model.invoke(messages)
                 final_answer = result.content if hasattr(result, "content") else str(result)
 
                 answers.append({

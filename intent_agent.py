@@ -154,53 +154,53 @@ class Corpus(BaseModel):
     corpus: str = Field(description="The corpus output that supports the given topic from the target stance")
 
 
-def sample_questions(json_path: str, json_path2: str, json_path3: str, n: int = 10):
+def sample_questions(
+    json_path: str,
+    json_path2: str | None = None,
+    json_path3: str | None = None,
+    n: int = 10,
+    seed: int | None = None,
+):
     path = Path(json_path)
-    path2= Path(json_path2)
-    path3 = Path(json_path3)
 
-    questions = []
+    rng = random.Random(seed)
 
-    """with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+    if "procon" in path.stem.lower():
+        procon_questions = defaultdict(list)
 
-            item = json.loads(line)
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
 
-            if "text" in item and item["text"]:
-                questions.append(item["text"])"""
+                item = json.loads(line)
 
-    """with path2.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+                if item.get("text"):
+                    topic_id = item["_id"].split("_")[0]
+                    procon_questions[topic_id].append(item["text"])
 
-            item = json.loads(line)
+        questions = [
+            rng.choice(topic_questions)
+            for topic_questions in procon_questions.values()
+        ]
 
-            if "text" in item and item["text"]:
-                questions.append(item["text"])"""
-    
-    procon_question = defaultdict(list)
-    with path3.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+    else:
+        questions = []
 
-            item = json.loads(line)
-            if "text" in item and item["text"]:
-                topic_id = item["_id"].split("_")[0]
-                procon_question[topic_id].append(item["text"])
-            
-    for key, value in procon_question.items():
-        sample = random.choice(value)
-        questions.append(sample)
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
 
-    sampled = random.sample(questions, min(n, len(questions)))
-    print(sampled)
+                item = json.loads(line)
+
+                if item.get("text"):
+                    questions.append(item["text"])
+
+    sampled = rng.sample(questions, min(n, len(questions)))
+
     return sampled
 
 
@@ -230,7 +230,13 @@ def parse_llm_json(raw):
     return {}
 
 
-def run_intent_agent(target_stance, n_questions):
+def run_intent_agent(
+    target_stance,
+    n_questions,
+    query_path: str | Path = "data/naturalqueries.jsonl",
+    output_dir: str | Path = "out",
+    seed: int | None = None,
+):
     model = init_chat_model(
         "ollama:gemma4:latest",
         temperature=0.1,
@@ -270,8 +276,10 @@ def run_intent_agent(target_stance, n_questions):
     )
 
 
-    questions = sample_questions("data/naturalqueries.jsonl", "data/syntheticqueries.jsonl", "data/procon_queries.jsonl", n_questions)
-    extract_path = Path("out/extracted_intents.csv")
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    questions = sample_questions(str(query_path), n=n_questions, seed=seed)
+    extract_path = output_dir / "extracted_intents.csv"
     with extract_path.open("w", newline="", encoding="utf-8") as exfile:
         ex_writer = csv.DictWriter(exfile, fieldnames=["idx", "topic", "intent", "evidence_nodes"])
         ex_writer.writeheader()
@@ -317,7 +325,7 @@ def run_intent_agent(target_stance, n_questions):
             print(f"Extracted Evidence Nodes: {evidence_nodes}")
             print()
 
-    output_path = Path("out/intent_agent_results.csv")
+    output_path = output_dir / "intent_agent_results.csv"
     fieldnames = ["idx", "topic", "statement", "stance", "intent", "evidence_nodes", "corpus"]
     with extract_path.open("r", encoding="utf-8") as exfile, output_path.open("w", newline="", encoding="utf-8") as csvfile:
         reader = csv.DictReader(exfile)

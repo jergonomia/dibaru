@@ -18,3 +18,5 @@ chroma_db*/
 out/
 out.csv
 *.png
+runs_non_agentic
+runs_non_agentic_deepseek

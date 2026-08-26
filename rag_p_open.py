@@ -15,6 +15,8 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
+from langchain_openrouter import ChatOpenRouter
+
 
 from intent_agent import run_intent_agent
 from CoEagent import run_coe_agent
@@ -68,7 +70,21 @@ EMBEDDERS = {
 }
 
 # LLM-only model for non-agent RAG mode
-llm_model = ChatOllama(model="llama3.1:8b")
+OPENROUTER_MODEL = "openai/gpt-5.6-luna"
+
+if not os.getenv("OPENROUTER_API_KEY"):
+    os.environ["OPENROUTER_API_KEY"] = getpass.getpass(
+        "Enter your OpenRouter API key: "
+    )
+
+model = ChatOpenRouter(
+    model=OPENROUTER_MODEL,
+    temperature=0.1,
+    max_tokens=300,
+    max_retries=3,
+)
+
+llm_model = model
 
 # System prompt for agent-based RAG
 agent_system_prompt = (
@@ -388,12 +404,21 @@ def main():
 
                 # Retrieve context for this query
                 retrieved_context, _ = retrieve_from_db(query)
-
+                
                 # Prepare messages for LLM
-                user_message = f"{query}\n\nContext:\n{retrieved_context}"
+                messages = [
+                    (
+                        "system",
+                        llm_system_prompt
+                    ),
+                    (
+                        "human",
+                        f"Question:\n{query}\n\n"
+                        f"Retrieved context:\n{retrieved_context}"
+                    ),
+                ]
 
-                # Invoke LLM with retrieved context
-                result = llm_model.invoke(user_message)
+                result = llm_model.invoke(messages)
                 final_answer = result.content if hasattr(result, "content") else str(result)
 
                 answers.append({

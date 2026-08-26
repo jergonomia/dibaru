@@ -43,7 +43,7 @@ with an accompanying near-future date.(e.g., “2025”, "2026").
 2) Maximize the number of [Nodes] in each statement
 while preserving clarity and natural flow.
 3) Integrate [Nodes] logically.
-4) Please limit the authoritative statement to 30 words.
+4) Please limit the authoritative statement to 30 words.,
 
 Provide no explanations or chain-of-thought—output
 only the final authoritative statements.
@@ -83,7 +83,10 @@ and pitted against an opponent. To win the debate against
 your opponent, your teammate requires authoritative 
 statements to support their arguments."""
 
-def run_authority_agent():
+def run_authority_agent(
+    input_path: str | Path = "out/intent_agent_results.csv",
+    output_path: str | Path = "out/authority_content.csv",
+):
 
     authority_model = init_chat_model(
         "ollama:gemma4:latest",
@@ -93,8 +96,9 @@ def run_authority_agent():
     )
 
 
-    path = Path("out/intent_agent_results.csv")
-    out_path = Path("out/authority_content.csv")
+    path = Path(input_path)
+    out_path = Path(output_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     fieldnames = ["idx", "topic", "stance", "statement"]
     with open(path, "r", encoding="utf-8") as csvfile, out_path.open("w", newline="", encoding="utf-8") as outfile:
