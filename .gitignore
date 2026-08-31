@@ -20,3 +20,6 @@ out.csv
 *.png
 runs_non_agentic
 runs_non_agentic_deepseek
+runs_non_agentic_gpt
+runs_paraphrased
+.biaschain_cache

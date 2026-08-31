@@ -167,6 +167,21 @@ class Orchestrator:
         for name in self.matrix["datasets"]:
             if name not in self.datasets:
                 raise ConfigError(f"Dataset {name!r} has no [dataset.{name}] configuration")
+            cfg = self.datasets[name]
+            configured_query_files = []
+            if str(cfg.get("rag_query_file", "")).strip():
+                configured_query_files.append(str(cfg["rag_query_file"]))
+            configured_query_files.extend(
+                str(value)
+                for value in cfg.get("rag_query_files", {}).values()
+                if str(value).strip()
+            )
+            for value in configured_query_files:
+                path = resolve_path(self.root, value)
+                if not path.exists():
+                    raise ConfigError(
+                        f"Paraphrased RAG query file does not exist for dataset {name!r}: {path}"
+                    )
         for name in self.matrix["generators"]:
             if name not in self.models:
                 raise ConfigError(f"Generator {name!r} has no [model.{name}] configuration")
@@ -197,10 +212,16 @@ class Orchestrator:
                     for stance_value in self.matrix["target_stances"]:
                         stance = str(stance_value).upper()
                         baseline_path = self.baseline_source(method, stance)
+                        rag_query_path = self.dataset_rag_query_file(dataset, stance)
                         input_signature = digest(
                             {
                                 "dataset_config": dataset_cfg,
                                 "query": path_signature(query_path),
+                                "rag_query": (
+                                    path_signature(rag_query_path)
+                                    if rag_query_path
+                                    else None
+                                ),
                                 "corpora": [path_signature(path) for path in corpus_paths],
                                 "baseline_source": path_signature(baseline_path) if baseline_path else None,
                                 "baseline_config": self.baselines.get(method, {}),
@@ -259,6 +280,25 @@ class Orchestrator:
     def source_file(self, experiment: Experiment) -> Path | None:
         return self.baseline_source(experiment.attack_method, experiment.target_stance)
 
+    def dataset_rag_query_file(
+        self,
+        dataset: str,
+        target_stance: str,
+    ) -> Path | None:
+        """Resolve an optional RAG-only query mapping for a dataset/stance."""
+        cfg = self.datasets[dataset]
+        per_stance = cfg.get("rag_query_files", {})
+        value = str(
+            per_stance.get(target_stance.upper(), cfg.get("rag_query_file", ""))
+        ).strip()
+        return resolve_path(self.root, value) if value else None
+
+    def rag_query_file(self, experiment: Experiment) -> Path | None:
+        return self.dataset_rag_query_file(
+            experiment.dataset,
+            experiment.target_stance,
+        )
+
     def baseline_source(self, method: str, target_stance: str) -> Path | None:
         cfg = self.baselines.get(method, {})
         source_files = cfg.get("source_files", {})
@@ -283,6 +323,7 @@ class Orchestrator:
 
     def clean_cache_key(self, experiment: Experiment, documents_dir: Path) -> str:
         _, corpus_files, clean_db, collection = self.dataset_paths(experiment)
+        rag_query_file = self.rag_query_file(experiment)
         manifest = json.loads((documents_dir / "documents_manifest.json").read_text(encoding="utf-8"))
         value = {
             "dataset": experiment.dataset,
@@ -297,6 +338,9 @@ class Orchestrator:
             "runs": experiment.runs_per_question,
             "top_k": experiment.top_k,
             "topics_sha256": manifest["topics_sha256"],
+            "rag_query": (
+                path_signature(rag_query_file) if rag_query_file else None
+            ),
             "code_signature": self.code_signature,
         }
         return digest(value, 24)
@@ -440,7 +484,16 @@ class Orchestrator:
         elif stage in {"poisoned_rag", "clean_rag"}:
             manifest = json.loads((run_dir / "documents" / "documents_manifest.json").read_text(encoding="utf-8"))
             expected_rows = int(manifest["document_count"]) * experiment.runs_per_question
-            actual_rows = self.csv_rows(paths[0], {"original_query", "query_idx", "run_idx", "answer", "retrieved_context"})
+            required_columns = {
+                "original_query",
+                "query_idx",
+                "run_idx",
+                "answer",
+                "retrieved_context",
+            }
+            if self.rag_query_file(experiment):
+                required_columns.add("rephrased_query")
+            actual_rows = self.csv_rows(paths[0], required_columns)
             if actual_rows != expected_rows:
                 raise StageFailure(f"Expected {expected_rows} RAG rows, found {actual_rows} in {paths[0]}")
         elif stage == "evaluation":
@@ -686,6 +739,9 @@ class Orchestrator:
         ]
         for corpus_file in corpus_files:
             command.extend(["--corpus-file", str(corpus_file)])
+        rag_query_file = self.rag_query_file(experiment)
+        if rag_query_file:
+            command.extend(["--query-override-file", str(rag_query_file)])
         if condition == "poisoned":
             command.extend(["--poisoned-db", str(run_dir / "databases" / "poisoned")])
         if experiment.agentic_rag:
@@ -933,8 +989,12 @@ class Orchestrator:
         for index, experiment in enumerate(experiments, start=1):
             source = self.source_file(experiment)
             source_text = f", source={source}" if source else ""
+            rag_query_file = self.rag_query_file(experiment)
+            rag_query_text = (
+                f", rag_queries={rag_query_file}" if rag_query_file else ""
+            )
             resolved_id = self.run_dir(experiment).name
-            print(f"{index:3d}. {resolved_id}{source_text}")
+            print(f"{index:3d}. {resolved_id}{source_text}{rag_query_text}")
 
     def _summary_row(
         self,

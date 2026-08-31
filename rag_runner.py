@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -72,7 +73,7 @@ def load_jsonl_documents(path: Path, source_prefix: str, document_class):
 
 def load_poisoned_documents(path: Path, document_class):
     documents = []
-    topics = []
+    topic_records = []
     with path.open("r", encoding="utf-8", newline="") as handle:
         sample = handle.read(4096)
         handle.seek(0)
@@ -86,7 +87,12 @@ def load_poisoned_documents(path: Path, document_class):
             stance = (row.get("stance") or row.get("target_stance") or "").strip()
             if not topic or not poisoned_text:
                 continue
-            topics.append(topic)
+            topic_records.append(
+                {
+                    "topic": topic,
+                    "idx": (row.get("idx") or row.get("query_idx") or "").strip(),
+                }
+            )
             documents.append(
                 document_class(
                     page_content=poisoned_text,
@@ -97,10 +103,182 @@ def load_poisoned_documents(path: Path, document_class):
                     },
                 )
             )
-    topics = list(dict.fromkeys(topics))
-    if not topics:
+    topic_records = list(
+        {record["topic"]: record for record in topic_records}.values()
+    )
+    if not topic_records:
         raise ValueError(f"No usable topics in {path}")
-    return documents, topics
+    return documents, topic_records
+
+
+def normalize_column_name(value: str) -> str:
+    return (
+        value.strip()
+        .strip("*`")
+        .replace("\\_", "_")
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+
+
+def clean_markdown_cell(value: str) -> str:
+    """Remove accidental Markdown emphasis around a table cell."""
+    value = str(value).strip()
+    while value.startswith("**"):
+        value = value[2:].lstrip()
+    while value.endswith("**"):
+        value = value[:-2].rstrip()
+    return value
+
+
+def normalize_identifier(value: str) -> str:
+    value = str(value).strip()
+    return value[:-2] if value.endswith(".0") and value[:-2].isdigit() else value
+
+
+def load_query_overrides(
+    path: Path,
+    topic_records: list[dict[str, str]],
+    runs_per_question: int,
+) -> list[list[str]]:
+    """Match one paraphrased RAG query per run to each canonical topic.
+
+    Numbered columns such as ``paraphrase_1`` ... ``paraphrase_10`` are paired
+    with run indices.  A single unnumbered paraphrase column is also supported
+    and is reused across runs.  Topic matching is exact; identifiers provide a
+    safe fallback.  Row-order matching is intentionally unsupported.
+    """
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        sample = handle.read(4096)
+        handle.seek(0)
+        try:
+            delimiter = csv.Sniffer().sniff(sample, delimiters="|,\t;").delimiter
+        except csv.Error:
+            delimiter = "|"
+        reader = csv.DictReader(handle, delimiter=delimiter)
+        raw_columns = reader.fieldnames or []
+        columns = {normalize_column_name(column): column for column in raw_columns}
+
+        def find_column(candidates: tuple[str, ...]) -> str | None:
+            return next((columns[name] for name in candidates if name in columns), None)
+
+        single_paraphrase_column = find_column(
+            (
+                "paraphrased_topic",
+                "paraphrased_query",
+                "rephrased_query",
+                "paraphrase",
+            )
+        )
+        numbered_paraphrase_columns = []
+        for normalized_name, raw_name in columns.items():
+            match = re.fullmatch(
+                r"(?:paraphrase|paraphrased_topic|paraphrased_query|rephrased_query)_(\d+)",
+                normalized_name,
+            )
+            if match:
+                numbered_paraphrase_columns.append((int(match.group(1)), raw_name))
+        numbered_paraphrase_columns.sort()
+        topic_column = find_column(
+            ("topic", "original_topic", "original_query", "canonical_topic")
+        )
+        identifier_column = find_column(("idx", "query_idx", "id"))
+        if single_paraphrase_column is None and not numbered_paraphrase_columns:
+            raise ValueError(
+                f"Paraphrase file {path} needs a paraphrase column or numbered "
+                "columns such as paraphrase_1 ... paraphrase_10"
+            )
+        if numbered_paraphrase_columns:
+            expected_indices = list(range(1, len(numbered_paraphrase_columns) + 1))
+            actual_indices = [index for index, _ in numbered_paraphrase_columns]
+            if actual_indices != expected_indices:
+                raise ValueError(
+                    f"Numbered paraphrase columns in {path} must be contiguous from 1; "
+                    f"found {actual_indices}"
+                )
+            if len(numbered_paraphrase_columns) < runs_per_question:
+                raise ValueError(
+                    f"{path} contains {len(numbered_paraphrase_columns)} numbered "
+                    f"paraphrases per topic, but {runs_per_question} runs were requested"
+                )
+        if topic_column is None and identifier_column is None:
+            raise ValueError(
+                f"Paraphrase file {path} needs an original topic column or idx/query_idx"
+            )
+        rows = list(reader)
+
+    by_topic: dict[str, tuple[str, ...]] = {}
+    by_identifier: dict[str, tuple[str, ...]] = {}
+
+    def add_mapping(
+        mapping: dict[str, tuple[str, ...]],
+        key: str,
+        paraphrases: tuple[str, ...],
+        label: str,
+    ) -> None:
+        if not key:
+            return
+        previous = mapping.get(key)
+        if previous is not None and previous != paraphrases:
+            raise ValueError(f"Conflicting paraphrases for {label} {key!r} in {path}")
+        mapping[key] = paraphrases
+
+    for row_number, row in enumerate(rows, start=2):
+        if numbered_paraphrase_columns:
+            paraphrases = tuple(
+                clean_markdown_cell(row.get(column) or "")
+                for _, column in numbered_paraphrase_columns[:runs_per_question]
+            )
+        else:
+            paraphrase = clean_markdown_cell(
+                row.get(single_paraphrase_column) or ""
+            )
+            paraphrases = (paraphrase,) * runs_per_question
+        if any(not paraphrase for paraphrase in paraphrases):
+            raise ValueError(
+                f"Empty paraphrase among the first {runs_per_question} run columns "
+                f"at row {row_number} in {path}"
+            )
+        if topic_column is not None:
+            add_mapping(
+                by_topic,
+                clean_markdown_cell(row.get(topic_column) or ""),
+                paraphrases,
+                "topic",
+            )
+        if identifier_column is not None:
+            add_mapping(
+                by_identifier,
+                normalize_identifier(row.get(identifier_column) or ""),
+                paraphrases,
+                "identifier",
+            )
+
+    resolved = []
+    missing = []
+    for record in topic_records:
+        topic = record["topic"]
+        identifier = normalize_identifier(record.get("idx", ""))
+        topic_match = by_topic.get(topic)
+        identifier_match = by_identifier.get(identifier) if identifier else None
+        # Exact original-topic text is authoritative.  The file's idx may be a
+        # simple 1..N row number while poisoned_docs.csv may retain a dataset
+        # identifier, so idx is used only when no exact topic match exists.
+        paraphrases = topic_match or identifier_match
+        if paraphrases is None:
+            missing.append(f"idx={identifier!r}, topic={topic!r}")
+        else:
+            resolved.append(list(paraphrases))
+
+    if missing:
+        preview = "; ".join(missing[:5])
+        suffix = " ..." if len(missing) > 5 else ""
+        raise ValueError(
+            f"No paraphrase found for {len(missing)} poisoned-document topic(s): "
+            f"{preview}{suffix}"
+        )
+    return resolved
 
 
 def initialize_generator(provider: str, model_name: str, temperature: float, max_tokens: int, retries: int):
@@ -113,12 +291,12 @@ def initialize_generator(provider: str, model_name: str, temperature: float, max
 
         return ChatOpenRouter(
             model=model_name,
-            temperature=temperature,
             max_tokens=max_tokens,
             max_retries=retries,
             reasoning={"effort": "none"},
             openrouter_provider={
                 "sort": "throughput",
+                "allow_fallbacks": True,
                 "require_parameters": True,
             },
         )
@@ -140,6 +318,10 @@ def run(args: argparse.Namespace) -> None:
 
     if not args.poisoned_docs.exists():
         raise FileNotFoundError(f"Poisoned document file does not exist: {args.poisoned_docs}")
+    if args.query_override_file and not args.query_override_file.exists():
+        raise FileNotFoundError(
+            f"Paraphrase file does not exist: {args.query_override_file}"
+        )
     for corpus_file in args.corpus_file:
         if not corpus_file.exists():
             raise FileNotFoundError(f"Corpus file does not exist: {corpus_file}")
@@ -171,7 +353,22 @@ def run(args: argparse.Namespace) -> None:
     else:
         print(f"Reusing clean database with {clean_store._collection.count()} documents: {clean_db}")
 
-    poisoned_documents, topics = load_poisoned_documents(args.poisoned_docs, Document)
+    poisoned_documents, topic_records = load_poisoned_documents(args.poisoned_docs, Document)
+    canonical_topics = [record["topic"] for record in topic_records]
+    rag_queries = (
+        load_query_overrides(
+            args.query_override_file,
+            topic_records,
+            args.runs_per_question,
+        )
+        if args.query_override_file
+        else [[topic] * args.runs_per_question for topic in canonical_topics]
+    )
+    if args.query_override_file:
+        print(
+            f"Loaded {len(rag_queries)} paraphrased RAG queries from: "
+            f"{args.query_override_file}"
+        )
     if args.condition == "poisoned":
         if args.poisoned_db is None:
             raise ValueError("--poisoned-db is required for the poisoned condition")
@@ -214,10 +411,16 @@ def run(args: argparse.Namespace) -> None:
         agent = create_agent(generator, [retrieve_context], system_prompt=AGENT_SYSTEM_PROMPT)
 
     answers = []
-    for query_index, query in enumerate(tqdm(topics, desc="Processing queries"), start=1):
+    query_pairs = list(zip(canonical_topics, rag_queries, strict=True))
+    for query_index, (original_query, query_variants) in enumerate(
+        tqdm(query_pairs, desc="Processing queries"), start=1
+    ):
         for run_index in range(1, args.runs_per_question + 1):
+            rag_query = query_variants[run_index - 1]
             if agent is not None:
-                result = agent.invoke({"messages": [{"role": "user", "content": query}]})
+                result = agent.invoke(
+                    {"messages": [{"role": "user", "content": rag_query}]}
+                )
                 tool_outputs = []
                 final_answer = ""
                 for message in result["messages"]:
@@ -229,12 +432,12 @@ def run(args: argparse.Namespace) -> None:
                         final_answer = str(content)
                 retrieved_context = "\n\n---\n\n".join(tool_outputs)
             else:
-                retrieved_context, _ = retrieve(query)
+                retrieved_context, _ = retrieve(rag_query)
                 messages = [
                     ("system", LLM_SYSTEM_PROMPT),
                     (
                         "human",
-                        f"Question:\n{query}\n\nRetrieved context:\n{retrieved_context}",
+                        f"Question:\n{rag_query}\n\nRetrieved context:\n{retrieved_context}",
                     ),
                 ]
                 result = generator.invoke(messages)
@@ -242,16 +445,16 @@ def run(args: argparse.Namespace) -> None:
 
             answers.append(
                 {
-                    "original_query": query,
+                    "original_query": original_query,
                     "query_idx": query_index,
                     "run_idx": run_index,
-                    "rephrased_query": query,
+                    "rephrased_query": rag_query,
                     "answer": final_answer,
                     "retrieved_context": retrieved_context,
                 }
             )
 
-    expected = len(topics) * args.runs_per_question
+    expected = len(query_pairs) * args.runs_per_question
     if len(answers) != expected:
         raise RuntimeError(f"Expected {expected} answers, produced {len(answers)}")
 
@@ -268,6 +471,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--collection-name", required=True)
     parser.add_argument("--corpus-file", type=Path, action="append", required=True)
     parser.add_argument("--poisoned-docs", type=Path, required=True)
+    parser.add_argument(
+        "--query-override-file",
+        type=Path,
+        help=(
+            "Delimited file mapping each original topic (or idx/query_idx) to "
+            "one paraphrase or numbered paraphrase_1 ... paraphrase_N columns"
+        ),
+    )
     parser.add_argument("--clean-db", type=Path, required=True)
     parser.add_argument("--poisoned-db", type=Path)
     parser.add_argument("--output", type=Path, required=True)
