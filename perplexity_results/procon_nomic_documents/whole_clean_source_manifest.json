@@ -1,0 +1,15 @@
+{
+  "cache_version": 1,
+  "corpus_files": [
+    {
+      "path": "/m/home/home6/63/viljanj7/data/Desktop/dibaru/dibaru/data/procon_corpus.jsonl",
+      "size_bytes": 1211728,
+      "modified_time_ns": 1783335303920967426
+    }
+  ],
+  "document_count": 1478,
+  "model_name": "openai-community/gpt2",
+  "stride": 512,
+  "complete": true,
+  "processed_count": 1478
+}

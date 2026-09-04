@@ -1,0 +1,15 @@
+{
+  "cache_version": 1,
+  "corpus_files": [
+    {
+      "path": "/m/home/home6/63/viljanj7/data/Desktop/dibaru/dibaru/data/naturalcorpus.jsonl",
+      "size_bytes": 94000725,
+      "modified_time_ns": 1780561759984845000
+    }
+  ],
+  "document_count": 4662,
+  "model_name": "openai-community/gpt2",
+  "stride": 512,
+  "complete": true,
+  "processed_count": 4662
+}

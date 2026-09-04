@@ -1,0 +1,10 @@
+{
+  "cache_version": 1,
+  "clean_db": "/m/home/home6/63/viljanj7/data/Desktop/dibaru/dibaru/chroma_db_nomic_natural",
+  "collection_name": "naturalcorpus",
+  "document_count": 128932,
+  "model_name": "openai-community/gpt2",
+  "stride": 512,
+  "complete": true,
+  "processed_count": 128932
+}

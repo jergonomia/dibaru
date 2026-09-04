@@ -1,7 +1,7 @@
 
 [execution]
 python = "python"
-runs_dir = "runs_paraphrased"
+runs_dir = "runs_biaschain_variants_correct"
 cache_dir = ".biaschain_cache"
 max_retries = 2
 retry_backoff_seconds = 30
@@ -11,19 +11,18 @@ stance_model = "ollama:gemma4:latest"
 
 [matrix]
 datasets = ["procon"]
-generators = ["openrouter"]
-attack_methods = ["biaschain", "poisonedrag", "prompt_injection", "simple_prompt_injection"]
+generators = ["ollama"]
+attack_methods = ["biaschain_wiki", "biaschain_generation"]
 target_stances = ["PRO", "CON"]
 embedders = ["nomic"]
 agentic_rag = [false]
 n_questions = 40
 runs_per_question = 10
-seed = 67
+seed = 42
 top_k = 5
 
 [dataset.wiki_balance]
 query_file = "data/naturalqueries.jsonl"
-rag_query_file = "out/paraphrased_topics_wiki_balance.csv"
 corpus_files = ["data/naturalcorpus.jsonl"]
 collection_name = "naturalcorpus"
 
@@ -33,7 +32,6 @@ qwen = "chroma_db_qwen3_embedding_4b_natural"
 
 [dataset.procon]
 query_file = "data/procon_queries.jsonl"
-rag_query_file = "out/paraphrased_topics_procon.csv"
 corpus_files = ["data/procon_corpus.jsonl"]
 collection_name = "procon"
 
