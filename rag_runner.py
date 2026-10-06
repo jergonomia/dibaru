@@ -5,10 +5,21 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import re
 import shutil
+from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Dict, List, Sequence
+
+import numpy as np
+import pandas as pd
+from scipy.sparse.csgraph import connected_components
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.neighbors import NearestNeighbors
+from sklearn.preprocessing import normalize
 
 
 EMBEDDERS = {
@@ -26,6 +37,114 @@ LLM_SYSTEM_PROMPT = (
     "question as accurately and objectively as possible."
 )
 
+class GPT2PerplexityScorer:
+    def __init__(
+        self,
+        model_name: str,
+        device_name: str,
+        stride: int,
+    ) -> None:
+        try:
+            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+        except ImportError as error:
+            raise RuntimeError(
+                "Perplexity scoring requires torch and transformers"
+            ) from error
+
+        self.torch = torch
+        if device_name == "auto":
+            device_name = "cuda" if torch.cuda.is_available() else "cpu"
+        if device_name == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("--device cuda was requested, but CUDA is unavailable")
+
+        self.device = torch.device(device_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name)
+        self.model.to(self.device)
+        self.model.eval()
+        self.maximum_length = int(
+            getattr(self.model.config, "n_positions", self.tokenizer.model_max_length)
+        )
+        if stride <= 0 or stride > self.maximum_length:
+            raise ValueError(
+                f"Stride must be between 1 and {self.maximum_length}, received {stride}"
+            )
+        self.stride = stride
+        print(
+            f"Loaded {model_name} on {self.device}; "
+            f"maximum context={self.maximum_length}, stride={self.stride}"
+        )
+
+    def score(self, text: str) -> tuple[float, float, int]:
+        """Return raw PPL, log PPL, and predicted-token count for one document."""
+        torch = self.torch
+        text = str(text).strip()
+        if not text:
+            raise ValueError("Cannot calculate perplexity for empty text")
+
+        encoded = self.tokenizer(text, return_tensors="pt")
+        all_input_ids = encoded["input_ids"].to(self.device)
+        sequence_length = all_input_ids.size(1)
+        if sequence_length < 2:
+            raise ValueError("Text must contain at least two GPT-2 tokens")
+
+        total_negative_log_likelihood = 0.0
+        total_predicted_tokens = 0
+        previous_end = 0
+
+        with torch.inference_mode():
+            for begin in range(0, sequence_length, self.stride):
+                end = min(begin + self.maximum_length, sequence_length)
+                target_length = end - previous_end
+                input_ids = all_input_ids[:, begin:end]
+                target_ids = input_ids.clone()
+                target_ids[:, :-target_length] = -100
+
+                output = self.model(input_ids=input_ids, labels=target_ids)
+                # Causal-LM loss predicts labels[1:] from input_ids[:-1].
+                predicted_tokens = int((target_ids[:, 1:] != -100).sum().item())
+                if predicted_tokens > 0:
+                    total_negative_log_likelihood += (
+                        float(output.loss.item()) * predicted_tokens
+                    )
+                    total_predicted_tokens += predicted_tokens
+
+                previous_end = end
+                if end == sequence_length:
+                    break
+
+        if total_predicted_tokens == 0:
+            raise ValueError("No tokens were available for causal prediction")
+
+        log_perplexity = total_negative_log_likelihood / total_predicted_tokens
+        perplexity = math.exp(log_perplexity)
+        return perplexity, log_perplexity, total_predicted_tokens
+
+@dataclass(frozen=True)
+class Phrase:
+    doc_index: int
+    text: str
+
+def extract_phrases(text: str, min_words: int) -> List[str]:
+    words = normalize_text(text).split()
+
+    if len(words) < min_words:
+        return []
+
+    return [
+        " ".join(words[start : start + min_words])
+        for start in range(len(words) - min_words + 1)
+    ]
+
+def _build_vectorizer() -> TfidfVectorizer:
+    return TfidfVectorizer(
+        analyzer="word",
+        ngram_range=(1, 2),
+        lowercase=True,
+        norm="l2",
+        dtype=np.float32,
+    )
 
 def safe_replace_with_copy(source: Path, destination: Path) -> None:
     source = source.resolve()
@@ -145,9 +264,9 @@ def load_query_overrides(
     """Match one paraphrased RAG query per run to each canonical topic.
 
     Numbered columns such as ``paraphrase_1`` ... ``paraphrase_10`` are paired
-    with run indices.  A single unnumbered paraphrase column is also supported
-    and is reused across runs.  Topic matching is exact; identifiers provide a
-    safe fallback.  Row-order matching is intentionally unsupported.
+    with run indices. A single unnumbered paraphrase column is also supported
+    and is reused across runs. Topic matching is exact; identifiers provide a
+    fallback. Row-order matching is intentionally unsupported.
     """
     with path.open("r", encoding="utf-8", newline="") as handle:
         sample = handle.read(4096)
@@ -184,6 +303,7 @@ def load_query_overrides(
             ("topic", "original_topic", "original_query", "canonical_topic")
         )
         identifier_column = find_column(("idx", "query_idx", "id"))
+
         if single_paraphrase_column is None and not numbered_paraphrase_columns:
             raise ValueError(
                 f"Paraphrase file {path} needs a paraphrase column or numbered "
@@ -231,10 +351,9 @@ def load_query_overrides(
                 for _, column in numbered_paraphrase_columns[:runs_per_question]
             )
         else:
-            paraphrase = clean_markdown_cell(
-                row.get(single_paraphrase_column) or ""
-            )
+            paraphrase = clean_markdown_cell(row.get(single_paraphrase_column) or "")
             paraphrases = (paraphrase,) * runs_per_question
+
         if any(not paraphrase for paraphrase in paraphrases):
             raise ValueError(
                 f"Empty paraphrase among the first {runs_per_question} run columns "
@@ -262,9 +381,6 @@ def load_query_overrides(
         identifier = normalize_identifier(record.get("idx", ""))
         topic_match = by_topic.get(topic)
         identifier_match = by_identifier.get(identifier) if identifier else None
-        # Exact original-topic text is authoritative.  The file's idx may be a
-        # simple 1..N row number while poisoned_docs.csv may retain a dataset
-        # identifier, so idx is used only when no exact topic match exists.
         paraphrases = topic_match or identifier_match
         if paraphrases is None:
             missing.append(f"idx={identifier!r}, topic={topic!r}")
@@ -288,15 +404,15 @@ def initialize_generator(provider: str, model_name: str, temperature: float, max
                 "OPENROUTER_API_KEY is not set. Export it before starting an unattended run."
             )
         from langchain_openrouter import ChatOpenRouter
-
+        #The parameters temperature and reasoning should be removed if using GPT-5.6 Luna
         return ChatOpenRouter(
             model=model_name,
+            temperature=temperature,
             max_tokens=max_tokens,
             max_retries=retries,
             reasoning={"effort": "none"},
             openrouter_provider={
                 "sort": "throughput",
-                "allow_fallbacks": True,
                 "require_parameters": True,
             },
         )
@@ -305,6 +421,185 @@ def initialize_generator(provider: str, model_name: str, temperature: float, max
 
     return ChatOllama(model=model_name, temperature=temperature)
 
+def drop_shared_phrase_documents(
+    documents: Sequence,
+    clusters: Sequence[dict],
+    max_documents: int = 30,
+) -> list:
+    triggered_clusters = []
+    blocked_indices = set()
+
+    for cluster in clusters:
+        cluster_count = int(cluster.get("count", 0))
+        doc_indices = list(cluster.get("doc_indices", []))
+        if cluster_count > max_documents:
+            triggered_clusters.append(cluster)
+            blocked_indices.update(doc_indices)
+
+    kept = [
+        document
+        for index, document in enumerate(documents)
+        if index not in blocked_indices
+    ]
+
+    if triggered_clusters:
+        print(
+            f"Phrase-cluster duplicate defense triggered for "
+            f"{len(triggered_clusters)} cluster(s):"
+        )
+        for cluster in triggered_clusters:
+            example = cluster.get("example_phrase", "<unknown>")
+            doc_indices = cluster.get("doc_indices", [])
+            print(
+                f"  - cluster example: {example!r} | "
+                f"docs={len(doc_indices)} | "
+                f"doc_indices={doc_indices}"
+            )
+            for doc_index in doc_indices:
+                document = documents[doc_index]
+                preview = (document.page_content or "").replace("\n", " ")
+                preview = " ".join(preview.split())
+                print(f"    * dropped doc[{doc_index}]: {preview[:180]}")
+
+    print(
+        f"Documents kept: {len(kept)} | "
+        f"dropped for widely shared phrases: "
+        f"{len(documents) - len(kept)}"
+    )
+    return kept
+
+def shared_phrase_clusters(
+    documents: Sequence,
+    similarity_threshold: float = 0.95,
+    min_documents: int = 30,
+    min_words: int = 6,
+) -> List[dict]:
+    phrase_documents: dict[str, set[int]] = defaultdict(set)
+
+    for doc_index, document in enumerate(documents):
+        # Deduplicate phrases within one document.
+        document_phrases = set(
+            extract_phrases(document.page_content, min_words)
+        )
+        for phrase in document_phrases:
+            phrase_documents[phrase].add(doc_index)
+
+    shared_phrases = [
+        Phrase(doc_index, phrase)
+        for phrase, doc_indices in phrase_documents.items()
+        if len(doc_indices) >= min_documents
+        for doc_index in doc_indices
+    ]
+
+    if len(shared_phrases) < 2:
+        return []
+
+    vectorizer = _build_vectorizer()
+    matrix = vectorizer.fit_transform([phrase.text for phrase in shared_phrases])
+    distance_threshold = 1.0 - similarity_threshold
+
+    neighbors = NearestNeighbors(
+        metric="cosine",
+        radius=distance_threshold,
+        n_jobs=-1,
+    )
+    neighbors.fit(matrix)
+
+    adjacency = neighbors.radius_neighbors_graph(
+        matrix,
+        mode="connectivity",
+    )
+
+    adjacency.setdiag(False)
+    adjacency.eliminate_zeros()
+
+    _, labels = connected_components(
+        adjacency,
+        directed=False,
+    )
+
+    clusters_by_label: Dict[int, List[int]] = defaultdict(list)
+
+    for phrase_index, label in enumerate(labels):
+        clusters_by_label[int(label)].append(phrase_index)
+
+    clusters = []
+
+    for phrase_indices in clusters_by_label.values():
+        doc_indices = sorted(
+            {
+                shared_phrases[index].doc_index
+                for index in phrase_indices
+            }
+        )
+
+        if len(doc_indices) >= min_documents:
+            clusters.append(
+                {
+                    "example_phrase": shared_phrases[phrase_indices[0]].text,
+                    "doc_indices": doc_indices,
+                    "count": len(doc_indices),
+                }
+            )
+
+    clusters.sort(key=lambda cluster: cluster["count"], reverse=True)
+    return clusters
+
+def shared_semantic_clusters(
+    documents: Sequence,
+    embed_fn: Callable[[str], Sequence[float]],
+    similarity_threshold: float = 0.90,
+    min_documents: int = 30,
+) -> List[dict]:
+    """
+    Cluster documents by embedding similarity rather than shared literal
+    phrases. Catches paraphrased / LLM-rewritten poisoned docs (e.g.
+    CorruptRAG-AK) that push the same claim without sharing surface text.
+    """
+    texts = [doc.page_content for doc in documents]
+    if len(texts) < 2:
+        return []
+
+    embeddings = np.array(embed_fn(texts))
+    embeddings = normalize(embeddings, norm="l2")
+    distance_threshold = 1.0 - similarity_threshold
+
+    neighbors = NearestNeighbors(
+        metric="cosine",
+        radius=distance_threshold,
+        n_jobs=-1,
+    )
+    neighbors.fit(embeddings)
+
+    adjacency = neighbors.radius_neighbors_graph(embeddings, mode="connectivity")
+    adjacency.setdiag(False)
+    adjacency.eliminate_zeros()
+
+    _, labels = connected_components(adjacency, directed=False)
+
+    clusters_by_label: Dict[int, List[int]] = defaultdict(list)
+    for doc_index, label in enumerate(labels):
+        clusters_by_label[int(label)].append(doc_index)
+
+    clusters = []
+    for doc_indices in clusters_by_label.values():
+        if len(doc_indices) >= min_documents:
+            example = documents[doc_indices[0]].page_content
+            clusters.append(
+                {
+                    "example_phrase": " ".join(example.split())[:180],
+                    "doc_indices": sorted(doc_indices),
+                    "count": len(doc_indices),
+                }
+            )
+
+    clusters.sort(key=lambda cluster: cluster["count"], reverse=True)
+    return clusters
+
+def normalize_text(text: str) -> str:
+    text = (text or "").strip()
+    text = " ".join(text.split())
+    return text.lower()
 
 def run(args: argparse.Namespace) -> None:
     import pandas as pd
@@ -327,7 +622,7 @@ def run(args: argparse.Namespace) -> None:
             raise FileNotFoundError(f"Corpus file does not exist: {corpus_file}")
 
     embedding_model = args.embedding_model or EMBEDDERS[args.embedder]
-    embedding = OllamaEmbeddings(model=embedding_model)
+    embedding = OllamaEmbeddings(model=embedding_model)    
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=args.chunk_size,
         chunk_overlap=args.chunk_overlap,
@@ -344,16 +639,46 @@ def run(args: argparse.Namespace) -> None:
     )
 
     if clean_store._collection.count() == 0:
+        raw_documents = []
+
         for corpus_file in args.corpus_file:
-            raw_documents = load_jsonl_documents(corpus_file, corpus_file.name, Document)
-            chunks = splitter.split_documents(raw_documents)
-            print(f"Embedding {len(chunks)} chunks from {corpus_file}")
-            for start in tqdm(range(0, len(chunks), args.batch_size), desc="Building clean DB"):
-                clean_store.add_documents(chunks[start : start + args.batch_size])
+            raw_documents.extend(
+                load_jsonl_documents(corpus_file, corpus_file.name, Document)
+            )
+
+        if args.duplicate_defense:
+            clusters = shared_phrase_clusters(
+                raw_documents,
+                similarity_threshold=0.95,
+                min_documents=30,
+                min_words=10,
+            )
+            raw_documents = drop_shared_phrase_documents(
+                raw_documents,
+                clusters,
+                max_documents=30,
+            )
+
+        if args.clustering_defense:
+            clusters = shared_semantic_clusters(raw_documents, embedding.embed_documents)
+            raw_documents = drop_shared_phrase_documents(
+                raw_documents,
+                clusters,
+                max_documents=30,
+            )
+
+        chunks = splitter.split_documents(raw_documents)
+        print(f"Embedding {len(chunks)} chunks")
+
+        for start in tqdm(range(0, len(chunks), args.batch_size),desc="Building clean DB",):
+            clean_store.add_documents(chunks[start : start + args.batch_size])
     else:
         print(f"Reusing clean database with {clean_store._collection.count()} documents: {clean_db}")
 
-    poisoned_documents, topic_records = load_poisoned_documents(args.poisoned_docs, Document)
+    poisoned_documents, topic_records = load_poisoned_documents(
+        args.poisoned_docs,
+        Document,
+    )
     canonical_topics = [record["topic"] for record in topic_records]
     rag_queries = (
         load_query_overrides(
@@ -366,9 +691,29 @@ def run(args: argparse.Namespace) -> None:
     )
     if args.query_override_file:
         print(
-            f"Loaded {len(rag_queries)} paraphrased RAG queries from: "
+            f"Loaded {len(rag_queries)} sets of paraphrased RAG queries from: "
             f"{args.query_override_file}"
         )
+    if args.duplicate_defense:
+        clusters = shared_phrase_clusters(
+                poisoned_documents,
+                similarity_threshold=0.95,
+                min_documents=30,
+                min_words=10,
+            )
+        poisoned_documents = drop_shared_phrase_documents(
+                poisoned_documents,
+                clusters,
+                max_documents=30,
+        )
+    if args.clustering_defense:
+        clusters = shared_semantic_clusters(raw_documents, embedding.embed_documents)
+        poisoned_documents = drop_shared_phrase_documents(
+                poisoned_documents,
+                clusters,
+                max_documents=30,
+        )
+
     if args.condition == "poisoned":
         if args.poisoned_db is None:
             raise ValueError("--poisoned-db is required for the poisoned condition")
@@ -394,7 +739,35 @@ def run(args: argparse.Namespace) -> None:
 
     def retrieve(query: str):
         print("RETRIEVER QUERY:", repr(query))
-        retrieved = active_store.similarity_search(query, k=args.top_k)
+
+        n_buffer = 5
+        fetch_k = args.top_k + n_buffer if args.perplexity_defense else args.top_k
+
+        retrieved = active_store.similarity_search(query, k=fetch_k)
+
+        if args.perplexity_defense:
+            scorer = GPT2PerplexityScorer(
+                model_name="openai-community/gpt2",
+                device_name="auto",
+                stride=512,
+            )
+            filtered = []
+            removed = 0
+            for item in retrieved:
+                ppl, log_ppl, token_count = scorer.score(item.page_content)
+                if ppl > 45 or ppl < 15:
+                    removed += 1
+                    print(f"Removed document with perplexity score {ppl}:")
+                    print(item.page_content)
+                else:
+                    filtered.append(item)
+            print(f"{removed} documents removed by perplexity filtering")
+
+            take_k = min(len(filtered), args.top_k)
+            if take_k < args.top_k:
+                print(f"Note: Only {take_k} documents available after filtering (requested top_k={args.top_k}).")
+            retrieved = filtered[:take_k]
+
         serialized = "\n\n".join(
             f"Source: {doc.metadata.get('source', 'unknown')}\nContent: {doc.page_content}"
             for doc in retrieved
@@ -413,7 +786,8 @@ def run(args: argparse.Namespace) -> None:
     answers = []
     query_pairs = list(zip(canonical_topics, rag_queries, strict=True))
     for query_index, (original_query, query_variants) in enumerate(
-        tqdm(query_pairs, desc="Processing queries"), start=1
+        tqdm(query_pairs, desc="Processing queries"),
+        start=1,
     ):
         for run_index in range(1, args.runs_per_question + 1):
             rag_query = query_variants[run_index - 1]
@@ -495,6 +869,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.1)
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--request-retries", type=int, default=3)
+    parser.add_argument("--duplicate-defense", action="store_true")
+    parser.add_argument("--perplexity-defense", action="store_true")
+    parser.add_argument("--clustering-defense", action="store_true")
     return parser.parse_args()
 
 

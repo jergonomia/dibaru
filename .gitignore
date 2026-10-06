@@ -23,4 +23,11 @@ runs_non_agentic_deepseek
 runs_non_agentic_gpt
 runs_paraphrased
 runs_biaschain_variants_correct
+perplexity_results
+runs_non_agentic_additional
+runs_paraphrased_additional
+runs_synthetic+natural_corruptRAG-AS
+runs_synthetic+natural
+runs_synthetic+natural_nonparaphrased
+runs_testing_notopic_CorruptRAG_AK
 .biaschain_cache

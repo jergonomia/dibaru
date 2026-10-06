@@ -1,7 +1,7 @@
 
 [execution]
 python = "python"
-runs_dir = "runs_biaschain_variants_correct"
+runs_dir = "runs_synthetic+natural_nonparaphrased"
 cache_dir = ".biaschain_cache"
 max_retries = 2
 retry_backoff_seconds = 30
@@ -10,21 +10,34 @@ fail_fast = false
 stance_model = "ollama:gemma4:latest"
 
 [matrix]
-datasets = ["procon"]
+datasets = ["wiki_balance_mixed"]
 generators = ["ollama"]
-attack_methods = ["biaschain_wiki", "biaschain_generation"]
+attack_methods = ["biaschain", "ebi", "poisonedrag", "simple_prompt_injection", "prompt_injection"]
 target_stances = ["PRO", "CON"]
 embedders = ["nomic"]
 agentic_rag = [false]
 n_questions = 40
 runs_per_question = 10
-seed = 42
+seed = 67
 top_k = 5
+
+[dataset.wiki_balance_mixed]
+query_file = "data/naturalqueries.jsonl"
+corpus_files = [
+    "data/naturalcorpus.jsonl",
+    "data/syntheticcorpus.jsonl",
+]
+collection_name = "naturalcorpus"
+# rag_query_file = "out/paraphrased_topics_wiki_balance.csv"
+
+[dataset.wiki_balance_mixed.clean_databases]
+nomic = "chroma_db_nomic"
 
 [dataset.wiki_balance]
 query_file = "data/naturalqueries.jsonl"
 corpus_files = ["data/naturalcorpus.jsonl"]
 collection_name = "naturalcorpus"
+# rag_query_file = "out/paraphrased_topics_wiki_balance.csv"
 
 [dataset.wiki_balance.clean_databases]
 nomic = "chroma_db_nomic_natural"
@@ -34,6 +47,7 @@ qwen = "chroma_db_qwen3_embedding_4b_natural"
 query_file = "data/procon_queries.jsonl"
 corpus_files = ["data/procon_corpus.jsonl"]
 collection_name = "procon"
+# rag_query_file = "out/paraphrased_topics_procon.csv"
 
 [dataset.procon.clean_databases]
 nomic = "chroma_db_nomic_procon"

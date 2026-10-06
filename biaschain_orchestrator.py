@@ -30,32 +30,10 @@ STAGES = ["documents", "poisoned_rag", "clean_rag", "evaluation"]
 METHOD_ALIASES = {
     "auth": "biaschain",
     "biaschain": "biaschain",
-    "biaschain_wiki": "biaschain_wiki",
-    "biaschain_generation": "biaschain_generation",
     "poisonedrag": "poisonedrag",
+    "ebi": "ebi",
     "prompt_injection": "prompt_injection",
     "simple_prompt_injection": "simple_prompt_injection",
-}
-
-ATTACK_DEFAULTS = {
-    "biaschain": {
-        "family": "biaschain",
-        "intent_agent_file": "intent_agent.py",
-        "authority_agent_file": "authority_agent.py",
-    },
-    "biaschain_wiki": {
-        "family": "biaschain",
-        "intent_agent_file": "intent_agent_wiki.py",
-        "authority_agent_file": "authority_agent_wiki.py",
-    },
-    "biaschain_generation": {
-        "family": "biaschain",
-        "intent_agent_file": "intent_agent_generation.py",
-        "authority_agent_file": "authority_agent.py",
-    },
-    "poisonedrag": {"family": "poisonedrag"},
-    "prompt_injection": {"family": "prompt_injection"},
-    "simple_prompt_injection": {"family": "simple_prompt_injection"},
 }
 
 
@@ -98,44 +76,6 @@ def atomic_json(path: Path, value: Any) -> None:
 def resolve_path(root: Path, value: str | Path) -> Path:
     path = Path(value).expanduser()
     return path.resolve() if path.is_absolute() else (root / path).resolve()
-
-
-def normalized_table_columns(path: Path) -> set[str]:
-    """Read and normalize only the header of a delimited query table."""
-    if not path.exists() or not path.is_file():
-        return set()
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        header = handle.readline()
-    delimiter = "|" if "|" in header else "," if "," in header else "\t"
-    columns = next(csv.reader([header], delimiter=delimiter), [])
-    return {
-        column.strip()
-        .strip("*`")
-        .replace("\\_", "_")
-        .lower()
-        .replace("-", "_")
-        .replace(" ", "_")
-        for column in columns
-    }
-
-
-def is_prepared_query_file(path: Path) -> bool:
-    columns = normalized_table_columns(path)
-    has_topic = "topic" in columns or "original_query" in columns
-    has_paraphrase = any(
-        column in {
-            "paraphrase",
-            "paraphrased_topic",
-            "paraphrased_query",
-            "rephrased_query",
-        }
-        or column.startswith("paraphrase_")
-        or column.startswith("paraphrased_topic_")
-        or column.startswith("paraphrased_query_")
-        or column.startswith("rephrased_query_")
-        for column in columns
-    )
-    return has_topic and has_paraphrase
 
 
 @dataclass(frozen=True)
@@ -186,7 +126,6 @@ class Orchestrator:
         self.models = self.config.get("model", {})
         self.embedders = self.config.get("embedder", {})
         self.baselines = self.config.get("baseline", {})
-        self.attacks = self.config.get("attack", {})
         self.matrix = self.config.get("matrix", {})
         self.runs_dir = resolve_path(self.root, self.execution.get("runs_dir", "runs"))
         self.cache_dir = resolve_path(self.root, self.execution.get("cache_dir", ".biaschain_cache"))
@@ -207,6 +146,8 @@ class Orchestrator:
             "CoEagent.py",
             "authority_agent.py",
             "PoisonedRAG.py",
+            "EBI.py",
+            "duo.py",
             "prompt_injection.py",
             "simple_prompt_injection.py",
         ]
@@ -229,40 +170,15 @@ class Orchestrator:
         for name in self.matrix["datasets"]:
             if name not in self.datasets:
                 raise ConfigError(f"Dataset {name!r} has no [dataset.{name}] configuration")
-            cfg = self.datasets[name]
-            query_file = resolve_path(self.root, cfg["query_file"])
-            if not query_file.exists():
-                raise ConfigError(
-                    f"Query file does not exist for dataset {name!r}: {query_file}"
-                )
-            configured_query_files = []
-            if str(cfg.get("rag_query_file", "")).strip():
-                configured_query_files.append(str(cfg["rag_query_file"]))
-            configured_query_files.extend(
-                str(value)
-                for value in cfg.get("rag_query_files", {}).values()
-                if str(value).strip()
-            )
-            for value in configured_query_files:
-                path = resolve_path(self.root, value)
-                if not path.exists():
-                    raise ConfigError(
-                        f"Paraphrased RAG query file does not exist for dataset {name!r}: {path}"
-                    )
         for name in self.matrix["generators"]:
             if name not in self.models:
                 raise ConfigError(f"Generator {name!r} has no [model.{name}] configuration")
         for name in self.matrix["embedders"]:
             if name not in self.embedders:
                 raise ConfigError(f"Embedder {name!r} has no [embedder.{name}] configuration")
-        invalid_methods = set(self.matrix["attack_methods"]) - (
-            set(METHOD_ALIASES) | set(self.attacks)
-        )
+        invalid_methods = set(self.matrix["attack_methods"]) - set(METHOD_ALIASES)
         if invalid_methods:
             raise ConfigError(f"Unknown attack methods: {sorted(invalid_methods)}")
-        for method_value in self.matrix["attack_methods"]:
-            method = METHOD_ALIASES.get(method_value, method_value)
-            self.attack_spec(method)
         invalid_stances = {str(x).upper() for x in self.matrix["target_stances"]} - {"PRO", "CON"}
         if invalid_stances:
             raise ConfigError(f"Unknown target stances: {sorted(invalid_stances)}")
@@ -277,41 +193,20 @@ class Orchestrator:
         for dataset in self.matrix["datasets"]:
             for generator in self.matrix["generators"]:
                 for method_value in self.matrix["attack_methods"]:
-                    method = METHOD_ALIASES.get(method_value, method_value)
-                    attack_signature = self.attack_signature(method)
+                    method = METHOD_ALIASES[method_value]
                     dataset_cfg = self.datasets[dataset]
                     query_path = resolve_path(self.root, dataset_cfg["query_file"])
                     corpus_paths = [resolve_path(self.root, value) for value in dataset_cfg["corpus_files"]]
                     for stance_value in self.matrix["target_stances"]:
                         stance = str(stance_value).upper()
-                        rag_query_path = self.dataset_rag_query_file(dataset, stance)
-                        topic_source_path = self.dataset_topic_source_file(
-                            dataset,
-                            stance,
-                        )
-                        baseline_path = (
-                            None
-                            if topic_source_path
-                            else self.baseline_source(method, stance)
-                        )
+                        baseline_path = self.baseline_source(method, stance)
                         input_signature = digest(
                             {
                                 "dataset_config": dataset_cfg,
                                 "query": path_signature(query_path),
-                                "rag_query": (
-                                    path_signature(rag_query_path)
-                                    if rag_query_path
-                                    else None
-                                ),
-                                "topic_source": (
-                                    path_signature(topic_source_path)
-                                    if topic_source_path
-                                    else None
-                                ),
                                 "corpora": [path_signature(path) for path in corpus_paths],
                                 "baseline_source": path_signature(baseline_path) if baseline_path else None,
                                 "baseline_config": self.baselines.get(method, {}),
-                                "attack": attack_signature,
                             },
                             16,
                         )
@@ -365,110 +260,13 @@ class Orchestrator:
         return query_file, corpus_files, clean_db, str(cfg["collection_name"])
 
     def source_file(self, experiment: Experiment) -> Path | None:
-        if self.topic_source_file(experiment):
-            return None
         return self.baseline_source(experiment.attack_method, experiment.target_stance)
-
-    def dataset_rag_query_file(
-        self,
-        dataset: str,
-        target_stance: str,
-    ) -> Path | None:
-        """Resolve an optional RAG-only query mapping for a dataset/stance."""
-        cfg = self.datasets[dataset]
-        per_stance = cfg.get("rag_query_files", {})
-        value = str(
-            per_stance.get(target_stance.upper(), cfg.get("rag_query_file", ""))
-        ).strip()
-        if value:
-            return resolve_path(self.root, value)
-
-        query_file = resolve_path(self.root, cfg["query_file"])
-        return query_file if is_prepared_query_file(query_file) else None
-
-    def rag_query_file(self, experiment: Experiment) -> Path | None:
-        return self.dataset_rag_query_file(
-            experiment.dataset,
-            experiment.target_stance,
-        )
-
-    def dataset_topic_source_file(
-        self,
-        dataset: str,
-        target_stance: str,
-    ) -> Path | None:
-        """Return the prepared file when it also supplies canonical topics."""
-        cfg = self.datasets[dataset]
-        query_file = resolve_path(self.root, cfg["query_file"])
-        rag_query_file = self.dataset_rag_query_file(dataset, target_stance)
-        if (
-            rag_query_file
-            and rag_query_file == query_file
-            and is_prepared_query_file(query_file)
-        ):
-            return query_file
-        return None
-
-    def topic_source_file(self, experiment: Experiment) -> Path | None:
-        return self.dataset_topic_source_file(
-            experiment.dataset,
-            experiment.target_stance,
-        )
 
     def baseline_source(self, method: str, target_stance: str) -> Path | None:
         cfg = self.baselines.get(method, {})
         source_files = cfg.get("source_files", {})
         value = str(source_files.get(target_stance.upper(), cfg.get("source_file", ""))).strip()
         return resolve_path(self.root, value) if value else None
-
-    def attack_spec(self, method: str) -> dict[str, Any]:
-        """Resolve one attack variant and its selected agent implementations."""
-        defaults = ATTACK_DEFAULTS.get(method, {})
-        configured = self.attacks.get(method, {})
-        if not defaults and not configured:
-            raise ConfigError(f"Attack method {method!r} has no configuration")
-
-        spec = {**defaults, **configured}
-        family = METHOD_ALIASES.get(str(spec.get("family", method)), str(spec.get("family", method)))
-        if family not in {
-            "biaschain",
-            "poisonedrag",
-            "prompt_injection",
-            "simple_prompt_injection",
-        }:
-            raise ConfigError(
-                f"Attack method {method!r} has unknown family {family!r}"
-            )
-
-        result: dict[str, Any] = {"name": method, "family": family}
-        if family == "biaschain":
-            for key, default_name in (
-                ("intent_agent_file", "intent_agent.py"),
-                ("authority_agent_file", "authority_agent.py"),
-            ):
-                configured_value = configured.get(key)
-                path = (
-                    resolve_path(self.root, str(configured_value))
-                    if configured_value
-                    else (self.script_dir / str(defaults.get(key, default_name))).resolve()
-                )
-                if not path.exists() or not path.is_file():
-                    raise ConfigError(
-                        f"[{method}] {key} does not exist: {path}"
-                    )
-                result[key] = path
-        return result
-
-    def attack_signature(self, method: str) -> dict[str, Any]:
-        spec = self.attack_spec(method)
-        value: dict[str, Any] = {
-            "name": spec["name"],
-            "family": spec["family"],
-        }
-        for key in ("intent_agent_file", "authority_agent_file"):
-            if key in spec:
-                value[key] = path_signature(spec[key])
-        return value
 
     def document_cache_key(self, experiment: Experiment) -> str:
         query_file, _, _, _ = self.dataset_paths(experiment)
@@ -481,7 +279,6 @@ class Orchestrator:
             "seed": experiment.seed,
             "query": path_signature(query_file),
             "source": path_signature(source) if source else None,
-            "attack": self.attack_signature(experiment.attack_method),
             "poisonedrag_iterations": int(self.baselines.get("poisonedrag", {}).get("iterations", 10)),
             "code_signature": self.code_signature,
         }
@@ -489,8 +286,13 @@ class Orchestrator:
 
     def clean_cache_key(self, experiment: Experiment, documents_dir: Path) -> str:
         _, corpus_files, clean_db, collection = self.dataset_paths(experiment)
-        rag_query_file = self.rag_query_file(experiment)
         manifest = json.loads((documents_dir / "documents_manifest.json").read_text(encoding="utf-8"))
+        rag_query_file = self.datasets[experiment.dataset].get("rag_query_file")
+        rag_query_path = (
+            resolve_path(self.root, rag_query_file)
+            if rag_query_file
+            else None
+        )
         value = {
             "dataset": experiment.dataset,
             "collection": collection,
@@ -504,10 +306,12 @@ class Orchestrator:
             "runs": experiment.runs_per_question,
             "top_k": experiment.top_k,
             "topics_sha256": manifest["topics_sha256"],
-            "rag_query": (
-                path_signature(rag_query_file) if rag_query_file else None
-            ),
             "code_signature": self.code_signature,
+            "rag_query": (
+                path_signature(rag_query_path)
+                if rag_query_path
+                else None
+            ),
         }
         return digest(value, 24)
 
@@ -650,16 +454,7 @@ class Orchestrator:
         elif stage in {"poisoned_rag", "clean_rag"}:
             manifest = json.loads((run_dir / "documents" / "documents_manifest.json").read_text(encoding="utf-8"))
             expected_rows = int(manifest["document_count"]) * experiment.runs_per_question
-            required_columns = {
-                "original_query",
-                "query_idx",
-                "run_idx",
-                "answer",
-                "retrieved_context",
-            }
-            if self.rag_query_file(experiment):
-                required_columns.add("rephrased_query")
-            actual_rows = self.csv_rows(paths[0], required_columns)
+            actual_rows = self.csv_rows(paths[0], {"original_query", "query_idx", "run_idx", "answer", "retrieved_context"})
             if actual_rows != expected_rows:
                 raise StageFailure(f"Expected {expected_rows} RAG rows, found {actual_rows} in {paths[0]}")
         elif stage == "evaluation":
@@ -866,31 +661,28 @@ class Orchestrator:
                 return True
 
         query_file, _, _, _ = self.dataset_paths(experiment)
-        attack_spec = self.attack_spec(experiment.attack_method)
         command = [
             self.python,
             str(self.script_dir / "document_builder.py"),
             "--method", experiment.attack_method,
-            "--method-family", attack_spec["family"],
             "--target-stance", experiment.target_stance,
             "--query-file", str(query_file),
             "--output-dir", str(documents_dir),
             "--n-questions", str(experiment.n_questions),
             "--seed", str(experiment.seed),
             "--poisonedrag-iterations", str(int(self.baselines.get("poisonedrag", {}).get("iterations", 10))),
+            "--ebi-iterations", str(int(self.baselines.get("ebi", {}).get("iterations", 10))),
         ]
-        if attack_spec["family"] == "biaschain":
-            command.extend(
-                [
-                    "--intent-agent-file",
-                    str(attack_spec["intent_agent_file"]),
-                    "--authority-agent-file",
-                    str(attack_spec["authority_agent_file"]),
-                ]
+        for corpus_file in self.dataset_paths(experiment)[1]:
+            command.extend(["--corpus-file", str(corpus_file)])
+        if experiment.attack_method == "ebi":
+            fit_corpus_file = self.datasets[experiment.dataset].get("ebi_fit_corpus_file")
+            if fit_corpus_file:
+                command.extend(["--ebi-fit-corpus-file", str(resolve_path(self.root, fit_corpus_file))])
+            duo_model = self.baselines.get("ebi", {}).get(
+                "duo_embedding_model", "sentence-transformers/all-MiniLM-L6-v2"
             )
-        topic_source = self.topic_source_file(experiment)
-        if topic_source:
-            command.extend(["--topic-source", str(topic_source)])
+            command.extend(["--ebi-duo-embedding-model", str(duo_model)])
         source = self.source_file(experiment)
         if source:
             command.extend(["--source-file", str(source)])
@@ -917,11 +709,33 @@ class Orchestrator:
             "--runs-per-question", str(experiment.runs_per_question),
             "--top-k", str(experiment.top_k),
         ]
+        perplexity = self.execution.get("perplexity", {})
+        if perplexity.get("model"):
+            command.extend([
+                "--perplexity-model", str(perplexity["model"]),
+                "--perplexity-threshold", str(float(perplexity.get("threshold", 100.0))),
+                "--perplexity-candidate-multiplier",
+                str(int(perplexity.get("candidate_multiplier", 3))),
+                "--perplexity-max-length",
+                str(int(perplexity.get("max_length", 1024))),
+            ])
+
+        rag_query_file = self.datasets[experiment.dataset].get("rag_query_file")
+        if rag_query_file:
+            command.extend(
+                [
+                    "--query-override-file",
+                    str(resolve_path(self.root, rag_query_file)),
+                ]
+            )    
+        if self.execution.get("duplicate_defense", False):
+            command.append("--duplicate-defense")
+        if self.execution.get("clustering_defense", False):
+            command.append("--clustering-defense")
+        if self.execution.get("perplexity_defense", False):
+            command.append("--perplexity-defense")
         for corpus_file in corpus_files:
             command.extend(["--corpus-file", str(corpus_file)])
-        rag_query_file = self.rag_query_file(experiment)
-        if rag_query_file:
-            command.extend(["--query-override-file", str(rag_query_file)])
         if condition == "poisoned":
             command.extend(["--poisoned-db", str(run_dir / "databases" / "poisoned")])
         if experiment.agentic_rag:
@@ -1169,19 +983,8 @@ class Orchestrator:
         for index, experiment in enumerate(experiments, start=1):
             source = self.source_file(experiment)
             source_text = f", source={source}" if source else ""
-            rag_query_file = self.rag_query_file(experiment)
-            rag_query_text = (
-                f", rag_queries={rag_query_file}" if rag_query_file else ""
-            )
-            topic_source = self.topic_source_file(experiment)
-            topic_source_text = (
-                f", document_topics={topic_source}" if topic_source else ""
-            )
             resolved_id = self.run_dir(experiment).name
-            print(
-                f"{index:3d}. {resolved_id}{source_text}"
-                f"{rag_query_text}{topic_source_text}"
-            )
+            print(f"{index:3d}. {resolved_id}{source_text}")
 
     def _summary_row(
         self,

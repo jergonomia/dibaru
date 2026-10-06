@@ -943,28 +943,40 @@ def plot_distributions(
         for group in pd.unique(scores["group"])
         if group not in {TOPIC_CLEAN_GROUP, WHOLE_CLEAN_GROUP}
     ]
+
     if clean.empty:
         raise ValueError("Distribution plot requires a Clean group")
     if not attack_groups:
-        raise ValueError("Distribution plot requires at least one attack group")
+        raise ValueError(
+            "Distribution plot requires at least one attack group"
+        )
 
-    # With the expected four methods this creates the same 1 x 4 structure used
-    # in FlippedRAG and Topic-FlipRAG. It also remains usable with fewer methods.
+    # Arrange attack distributions into rows containing at most three panels.
+    ncols = min(3, len(attack_groups))
+    nrows = math.ceil(len(attack_groups) / ncols)
+
     sns.set_theme(style="whitegrid")
     figure, axes = plt.subplots(
-        1,
-        len(attack_groups),
-        figsize=(5.0 * len(attack_groups), 4.0),
+        nrows,
+        ncols,
+        figsize=(5.0 * ncols, 4.0 * nrows),
         sharex=True,
         sharey=True,
         squeeze=False,
     )
+    flat_axes = axes.ravel()
+
     whole_clean_color = "#4C72B0"
-    topic_clean_color = "#DD8452" if not whole_clean.empty else "#4C72B0"
+    topic_clean_color = (
+        "#DD8452" if not whole_clean.empty else "#4C72B0"
+    )
     attack_color = "#55A868"
 
-    for position, (axis, group) in enumerate(zip(axes.flat, attack_groups)):
+    for position, (axis, group) in enumerate(
+        zip(flat_axes, attack_groups)
+    ):
         attack = scores[scores["group"] == group]
+
         if not whole_clean.empty:
             sns.kdeplot(
                 data=whole_clean,
@@ -977,6 +989,7 @@ def plot_distributions(
                 warn_singular=False,
                 ax=axis,
             )
+
         sns.kdeplot(
             data=clean,
             x="log_perplexity",
@@ -984,10 +997,15 @@ def plot_distributions(
             fill=True,
             alpha=0.20,
             linewidth=1.8,
-            label="Topic-matched clean" if not whole_clean.empty else "Clean",
+            label=(
+                "Topic-matched clean"
+                if not whole_clean.empty
+                else "Clean"
+            ),
             warn_singular=False,
             ax=axis,
         )
+
         sns.kdeplot(
             data=attack,
             x="log_perplexity",
@@ -999,38 +1017,70 @@ def plot_distributions(
             warn_singular=False,
             ax=axis,
         )
+
         axis.set_title(group)
         axis.set_xlabel("Log PPL")
-        axis.set_ylabel("")
-        axis.legend(loc="upper right", frameon=True, fontsize=8)
+        axis.set_ylabel(
+            "Density" if position % ncols == 0 else ""
+        )
+        axis.legend(
+            loc="upper right",
+            frameon=True,
+            fontsize=8,
+        )
+
+    # Hide unused panels when the number of attacks is not divisible by three.
+    for axis in flat_axes[len(attack_groups):]:
+        axis.set_visible(False)
 
     if not full_range:
-        plot_values = scores[["group", "log_perplexity"]].copy()
+        plot_values = scores[
+            ["group", "log_perplexity"]
+        ].copy()
         plot_values["log_perplexity"] = pd.to_numeric(
-            plot_values["log_perplexity"], errors="coerce"
+            plot_values["log_perplexity"],
+            errors="coerce",
         )
-        plot_values = plot_values.dropna(subset=["log_perplexity"])
+        plot_values = plot_values.dropna(
+            subset=["log_perplexity"]
+        )
         plot_values = plot_values[
             plot_values["log_perplexity"].map(math.isfinite)
         ]
+
         if len(plot_values) >= 2:
-            group_limits = plot_values.groupby("group")["log_perplexity"].quantile(
-                [0.001, 0.999]
-            ).unstack()
+            group_limits = (
+                plot_values
+                .groupby("group")["log_perplexity"]
+                .quantile([0.001, 0.999])
+                .unstack()
+            )
             lower = float(group_limits[0.001].min())
             upper = float(group_limits[0.999].max())
+
             if upper > lower:
                 padding = 0.04 * (upper - lower)
-                axes.flat[0].set_xlim(lower - padding, upper + padding)
+                flat_axes[0].set_xlim(
+                    lower - padding,
+                    upper + padding,
+                )
                 print(
-                    "Distribution x-axis covers the central 99.8% within each "
-                    f"group ({lower:.3f} to {upper:.3f}); all values remain "
-                    "included in scoring and KDE estimation"
+                    "Distribution x-axis covers the central "
+                    "99.8% within each group "
+                    f"({lower:.3f} to {upper:.3f}); all values "
+                    "remain included in scoring and KDE estimation"
                 )
 
     figure.tight_layout()
-    figure.savefig(output_path, bbox_inches="tight")
-    figure.savefig(output_path.with_suffix(".png"), dpi=300, bbox_inches="tight")
+    figure.savefig(
+        output_path,
+        bbox_inches="tight",
+    )
+    figure.savefig(
+        output_path.with_suffix(".png"),
+        dpi=300,
+        bbox_inches="tight",
+    )
     plt.close(figure)
 
 
