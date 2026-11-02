@@ -299,7 +299,7 @@ def run_retrieval_sampling(
 
 
 def main():
-    run_retrieval_sampling(n_queries=10, k=20, seed=42)
+    run_retrieval_sampling(n_queries=10, k=50, seed=69)
 
 
 if __name__ == "__main__":
