@@ -31,3 +31,7 @@ runs_synthetic+natural
 runs_synthetic+natural_nonparaphrased
 runs_testing_notopic_CorruptRAG_AK
 .biaschain_cache
+runs_rerank_test
+runs_rerank_test_query_addition
+runs_rerank_test_query_addition_CorruptRAG_AK
+runs_rerank_test_query_addition_paraphrase

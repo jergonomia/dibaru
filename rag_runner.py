@@ -37,6 +37,83 @@ LLM_SYSTEM_PROMPT = (
     "question as accurately and objectively as possible."
 )
 
+class HuggingFaceReranker:
+    def __init__(
+        self,
+        model_name: str,
+        device: str,
+        batch_size: int,
+        max_length: int,
+    ) -> None:
+        try:
+            from sentence_transformers import CrossEncoder
+        except ImportError as error:
+            raise RuntimeError(
+                "Reranking requires sentence-transformers. Install it with: "
+                "pip install -U sentence-transformers"
+            ) from error
+
+        resolved_device = None if device == "auto" else device
+
+        self.model = CrossEncoder(
+            model_name,
+            device=resolved_device,
+            max_length=max_length,
+        )
+        self.batch_size = batch_size
+
+        print(
+            f"Loaded reranker {model_name} on "
+            f"{self.model.device}"
+        )
+
+    def rerank(
+        self,
+        query: str,
+        documents: Sequence,
+        top_k: int,
+    ) -> list:
+        if not documents:
+            return []
+
+        top_k = min(top_k, len(documents))
+        pairs = [
+            (query, document.page_content)
+            for document in documents
+        ]
+
+        scores = np.asarray(
+            self.model.predict(
+                pairs,
+                batch_size=self.batch_size,
+                show_progress_bar=False,
+                convert_to_numpy=True,
+            )
+        ).reshape(-1)
+
+        if len(scores) != len(documents):
+            raise RuntimeError(
+                f"Reranker returned {len(scores)} scores for "
+                f"{len(documents)} documents"
+            )
+
+        ranked_indices = np.argsort(
+            -scores,
+            kind="stable",
+        )[:top_k]
+
+        for rank, index in enumerate(ranked_indices, start=1):
+            print(
+                f"Reranker rank {rank}: "
+                f"candidate={int(index)}, "
+                f"score={float(scores[index]):.6f}"
+            )
+
+        return [
+            documents[int(index)]
+            for index in ranked_indices
+        ]
+
 class GPT2PerplexityScorer:
     def __init__(
         self,
@@ -737,13 +814,58 @@ def run(args: argparse.Namespace) -> None:
         args.request_retries,
     )
 
+    reranker = None
+
+    if args.reranker:
+        if args.reranker_candidate_k < args.top_k:
+            raise ValueError(
+                "--reranker-candidate-k must be greater than or "
+                "equal to --top-k"
+            )
+
+        reranker = HuggingFaceReranker(
+            model_name=args.reranker_model,
+            device=args.reranker_device,
+            batch_size=args.reranker_batch_size,
+            max_length=args.reranker_max_length,
+        )
+
+        print(
+            f"Reranking enabled: retrieve "
+            f"{args.reranker_candidate_k}, retain {args.top_k}"
+        )
+
+    retrieval_cache = {}
+
     def retrieve(query: str):
         print("RETRIEVER QUERY:", repr(query))
 
-        n_buffer = 5
-        fetch_k = args.top_k + n_buffer if args.perplexity_defense else args.top_k
+        if query in retrieval_cache:
+            return retrieval_cache[query]
 
-        retrieved = active_store.similarity_search(query, k=fetch_k)
+        n_buffer = 5
+        candidate_k = (
+            args.reranker_candidate_k
+            if reranker is not None
+            else args.top_k
+        )
+
+        fetch_k = (
+            candidate_k + n_buffer
+            if args.perplexity_defense
+            else candidate_k
+        )
+
+        retrieved = active_store.similarity_search(
+            query,
+            k=fetch_k,
+        )
+
+        if reranker is not None:
+            for document in retrieved:
+                document.page_content = (
+                    f"{query}\n\n{document.page_content}"
+                )
 
         if args.perplexity_defense:
             scorer = GPT2PerplexityScorer(
@@ -751,28 +873,51 @@ def run(args: argparse.Namespace) -> None:
                 device_name="auto",
                 stride=512,
             )
+
             filtered = []
             removed = 0
+
             for item in retrieved:
-                ppl, log_ppl, token_count = scorer.score(item.page_content)
+                ppl, log_ppl, token_count = scorer.score(
+                    item.page_content
+                )
+
                 if ppl > 45 or ppl < 15:
                     removed += 1
-                    print(f"Removed document with perplexity score {ppl}:")
+                    print(
+                        f"Removed document with perplexity score {ppl}:"
+                    )
                     print(item.page_content)
                 else:
                     filtered.append(item)
-            print(f"{removed} documents removed by perplexity filtering")
 
-            take_k = min(len(filtered), args.top_k)
-            if take_k < args.top_k:
-                print(f"Note: Only {take_k} documents available after filtering (requested top_k={args.top_k}).")
+            print(
+                f"{removed} documents removed by perplexity filtering"
+            )
+
+            take_k = min(len(filtered), candidate_k)
             retrieved = filtered[:take_k]
 
+        if reranker is not None:
+            retrieved = reranker.rerank(
+                query=query,
+                documents=retrieved,
+                top_k=args.top_k,
+            )
+        else:
+            retrieved = retrieved[:args.top_k]
+
         serialized = "\n\n".join(
-            f"Source: {doc.metadata.get('source', 'unknown')}\nContent: {doc.page_content}"
+            (
+                f"Source: {doc.metadata.get('source', 'unknown')}\n"
+                f"Content: {doc.page_content}"
+            )
             for doc in retrieved
         )
-        return serialized, retrieved
+
+        result = (serialized, retrieved)
+        retrieval_cache[query] = result
+        return result
 
     @tool(response_format="content_and_artifact")
     def retrieve_context(query: str):
@@ -872,6 +1017,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--duplicate-defense", action="store_true")
     parser.add_argument("--perplexity-defense", action="store_true")
     parser.add_argument("--clustering-defense", action="store_true")
+    parser.add_argument("--reranker", action="store_true")
+
+    parser.add_argument(
+        "--reranker-candidate-k",
+        type=int,
+        default=20,
+    )
+
+    parser.add_argument(
+        "--reranker-model",
+        default="Qwen/Qwen3-Reranker-0.6B",
+    )
+
+    parser.add_argument(
+        "--reranker-device",
+        choices=["auto", "cpu", "cuda"],
+        default="auto",
+    )
+
+    parser.add_argument(
+        "--reranker-batch-size",
+        type=int,
+        default=8,
+    )
+
+    parser.add_argument(
+        "--reranker-max-length",
+        type=int,
+        default=2048,
+    )
     return parser.parse_args()
 
 

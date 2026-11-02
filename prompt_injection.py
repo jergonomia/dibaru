@@ -151,7 +151,7 @@ def run_prompt_injection_baseline(
         for idx, topic in enumerate(topics, start=1):
             statement = generate_statement(topic, target_stance, model)
             corpus = build_prompt_injection(topic, statement, target_stance, model)
-            #corpus = corruptrag_ak(topic, corpus, model)
+            corpus = corruptrag_ak(topic, corpus, model)
 
             writer.writerow({
                 "idx": idx,

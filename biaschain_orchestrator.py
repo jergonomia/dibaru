@@ -19,12 +19,15 @@ import signal
 import subprocess
 import sys
 import time
-import tomllib
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 STAGES = ["documents", "poisoned_rag", "clean_rag", "evaluation"]
 METHOD_ALIASES = {
@@ -34,6 +37,14 @@ METHOD_ALIASES = {
     "ebi": "ebi",
     "prompt_injection": "prompt_injection",
     "simple_prompt_injection": "simple_prompt_injection",
+}
+LEGACY_EXPERIMENT_DEFAULTS = {
+    "reranker": False,
+    "reranker_candidate_k": 0,
+    "reranker_model": "",
+    "reranker_device": "",
+    "reranker_batch_size": 0,
+    "reranker_max_length": 0,
 }
 
 
@@ -92,6 +103,12 @@ class Experiment:
     runs_per_question: int
     seed: int
     top_k: int
+    reranker: bool
+    reranker_candidate_k: int
+    reranker_model: str
+    reranker_device: str
+    reranker_batch_size: int
+    reranker_max_length: int
     input_signature: str
     stance_model: str
     code_signature: str
@@ -100,6 +117,8 @@ class Experiment:
     def slug(self) -> str:
         agent = "agent" if self.agentic_rag else "base"
         parts = [self.dataset, self.generator, self.attack_method, self.target_stance.lower(), self.embedder, agent]
+        if self.reranker:
+            parts.append("rerank")
         return "-".join(part.replace("_", "-") for part in parts)
 
     @property
@@ -127,6 +146,7 @@ class Orchestrator:
         self.embedders = self.config.get("embedder", {})
         self.baselines = self.config.get("baseline", {})
         self.matrix = self.config.get("matrix", {})
+        self.reranking = self.config.get("reranking", {})
         self.runs_dir = resolve_path(self.root, self.execution.get("runs_dir", "runs"))
         self.cache_dir = resolve_path(self.root, self.execution.get("cache_dir", ".biaschain_cache"))
         self.python = self._python_command(self.execution.get("python", sys.executable))
@@ -182,6 +202,33 @@ class Orchestrator:
         invalid_stances = {str(x).upper() for x in self.matrix["target_stances"]} - {"PRO", "CON"}
         if invalid_stances:
             raise ConfigError(f"Unknown target stances: {sorted(invalid_stances)}")
+        reranker_values = self.matrix.get("reranker", [False])
+        if not isinstance(reranker_values, list) or not reranker_values:
+            raise ConfigError("[matrix].reranker must be a non-empty array when provided")
+        if any(not isinstance(value, bool) for value in reranker_values):
+            raise ConfigError("[matrix].reranker values must be true or false")
+        top_k = int(self.matrix.get("top_k", 5))
+        candidate_k = int(self.matrix.get("reranker_candidate_k", 20))
+        if top_k <= 0:
+            raise ConfigError("[matrix].top_k must be positive")
+        if any(reranker_values):
+            if not isinstance(self.reranking, dict):
+                raise ConfigError("[reranking] must be a TOML table")
+            if candidate_k < top_k:
+                raise ConfigError(
+                    "[matrix].reranker_candidate_k must be greater than or equal "
+                    "to [matrix].top_k"
+                )
+            model = str(self.reranking.get("model", "")).strip()
+            if not model:
+                raise ConfigError("[reranking].model is required when reranking is enabled")
+            device = str(self.reranking.get("device", "auto"))
+            if device not in {"auto", "cpu", "cuda"}:
+                raise ConfigError("[reranking].device must be auto, cpu, or cuda")
+            if int(self.reranking.get("batch_size", 8)) <= 0:
+                raise ConfigError("[reranking].batch_size must be positive")
+            if int(self.reranking.get("max_length", 2048)) <= 0:
+                raise ConfigError("[reranking].max_length must be positive")
 
     def experiments(self) -> list[Experiment]:
         result = []
@@ -189,6 +236,14 @@ class Orchestrator:
         runs_per_question = int(self.matrix.get("runs_per_question", 10))
         seed = int(self.matrix.get("seed", 42))
         top_k = int(self.matrix.get("top_k", 5))
+        reranker_values = self.matrix.get("reranker", [False])
+        reranker_candidate_k = int(self.matrix.get("reranker_candidate_k", 20))
+        reranker_model = str(
+            self.reranking.get("model", "Qwen/Qwen3-Reranker-0.6B")
+        )
+        reranker_device = str(self.reranking.get("device", "auto"))
+        reranker_batch_size = int(self.reranking.get("batch_size", 8))
+        reranker_max_length = int(self.reranking.get("max_length", 2048))
         stance_model = str(self.execution.get("stance_model", "ollama:gemma4:latest"))
         for dataset in self.matrix["datasets"]:
             for generator in self.matrix["generators"]:
@@ -212,25 +267,49 @@ class Orchestrator:
                         )
                         for embedder in self.matrix["embedders"]:
                             for agentic in self.matrix["agentic_rag"]:
-                                result.append(
-                                    Experiment(
-                                        dataset=dataset,
-                                        generator=generator,
-                                        generator_model=str(self.models[generator]["name"]),
-                                        attack_method=method,
-                                        target_stance=stance,
-                                        embedder=embedder,
-                                        embedding_model=str(self.embedders[embedder]["name"]),
-                                        agentic_rag=bool(agentic),
-                                        n_questions=n_questions,
-                                        runs_per_question=runs_per_question,
-                                        seed=seed,
-                                        top_k=top_k,
-                                        input_signature=input_signature,
-                                        stance_model=stance_model,
-                                        code_signature=self.code_signature,
+                                for reranker_value in reranker_values:
+                                    reranker_enabled = bool(reranker_value)
+                                    result.append(
+                                        Experiment(
+                                            dataset=dataset,
+                                            generator=generator,
+                                            generator_model=str(self.models[generator]["name"]),
+                                            attack_method=method,
+                                            target_stance=stance,
+                                            embedder=embedder,
+                                            embedding_model=str(self.embedders[embedder]["name"]),
+                                            agentic_rag=bool(agentic),
+                                            n_questions=n_questions,
+                                            runs_per_question=runs_per_question,
+                                            seed=seed,
+                                            top_k=top_k,
+                                            reranker=reranker_enabled,
+                                            reranker_candidate_k=(
+                                                reranker_candidate_k
+                                                if reranker_enabled
+                                                else 0
+                                            ),
+                                            reranker_model=(
+                                                reranker_model if reranker_enabled else ""
+                                            ),
+                                            reranker_device=(
+                                                reranker_device if reranker_enabled else ""
+                                            ),
+                                            reranker_batch_size=(
+                                                reranker_batch_size
+                                                if reranker_enabled
+                                                else 0
+                                            ),
+                                            reranker_max_length=(
+                                                reranker_max_length
+                                                if reranker_enabled
+                                                else 0
+                                            ),
+                                            input_signature=input_signature,
+                                            stance_model=stance_model,
+                                            code_signature=self.code_signature,
+                                        )
                                     )
-                                )
         return result
 
     def select(self, patterns: list[str]) -> list[Experiment]:
@@ -305,6 +384,12 @@ class Orchestrator:
             "agentic": experiment.agentic_rag,
             "runs": experiment.runs_per_question,
             "top_k": experiment.top_k,
+            "reranker": experiment.reranker,
+            "reranker_candidate_k": experiment.reranker_candidate_k,
+            "reranker_model": experiment.reranker_model,
+            "reranker_device": experiment.reranker_device,
+            "reranker_batch_size": experiment.reranker_batch_size,
+            "reranker_max_length": experiment.reranker_max_length,
             "topics_sha256": manifest["topics_sha256"],
             "code_signature": self.code_signature,
             "rag_query": (
@@ -322,8 +407,12 @@ class Orchestrator:
     ) -> bool:
         """Match a prior run while deliberately ignoring only code_signature."""
         current = asdict(experiment)
+        normalized_stored = {
+            **LEGACY_EXPERIMENT_DEFAULTS,
+            **stored_experiment,
+        }
         return all(
-            stored_experiment.get(key) == value
+            normalized_stored.get(key) == value
             for key, value in current.items()
             if key != "code_signature"
         )
@@ -709,6 +798,22 @@ class Orchestrator:
             "--runs-per-question", str(experiment.runs_per_question),
             "--top-k", str(experiment.top_k),
         ]
+        if experiment.reranker:
+            command.extend(
+                [
+                    "--reranker",
+                    "--reranker-candidate-k",
+                    str(experiment.reranker_candidate_k),
+                    "--reranker-model",
+                    experiment.reranker_model,
+                    "--reranker-device",
+                    experiment.reranker_device,
+                    "--reranker-batch-size",
+                    str(experiment.reranker_batch_size),
+                    "--reranker-max-length",
+                    str(experiment.reranker_max_length),
+                ]
+            )
         perplexity = self.execution.get("perplexity", {})
         if perplexity.get("model"):
             command.extend([
@@ -812,12 +917,16 @@ class Orchestrator:
             raise ConfigError(f"Missing experiment metadata in {state_path}")
 
         field_names = set(Experiment.__dataclass_fields__)
-        missing = field_names - set(stored)
+        normalized_stored = {
+            **LEGACY_EXPERIMENT_DEFAULTS,
+            **stored,
+        }
+        missing = field_names - set(normalized_stored)
         if missing:
             raise ConfigError(
                 f"Experiment metadata in {state_path} is missing: {sorted(missing)}"
             )
-        return Experiment(**{name: stored[name] for name in field_names})
+        return Experiment(**{name: normalized_stored[name] for name in field_names})
 
     def existing_evaluation_targets(
         self,
